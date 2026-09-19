@@ -1,5 +1,7 @@
 # DPmusic
 
+代码编写：deepseek-flash
+Gemini也提供了些许帮助
 > **三平台聚合音乐播放器** —— Android / Kotlin · Jetpack Compose · Media3
 >
 > 一次搜索同时覆盖 **网易云音乐 / QQ 音乐 / 酷狗音乐**，统一完成播放、歌词、下载、
