@@ -36,3 +36,8 @@ keystore.properties
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------------- 分发产物 ----------------
+# 源码打包快照：内容与仓库源码重复，不纳入版本控制
+DPmusic.zip
+# 已打包的 APK 通过 GitHub Release 分发，不进入仓库
