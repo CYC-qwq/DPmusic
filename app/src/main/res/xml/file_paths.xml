@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 分享歌单文件：cache/shared 目录 -->
+    <cache-path name="shared" path="shared/" />
+</paths>

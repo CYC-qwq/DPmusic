@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 符头（左） -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M49.81,66.94 A9.5,7 -22 0,1 32.19,74.06 A9.5,7 -22 0,1 49.81,66.94 Z" />
+    <!-- 符头（右） -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M77.81,63.94 A9.5,7 -22 0,1 60.19,71.06 A9.5,7 -22 0,1 77.81,63.94 Z" />
+    <!-- 符干（左） -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M42.25,38.5 L47.75,38.5 L47.75,70.5 L42.25,70.5 Z" />
+    <!-- 符干（右） -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M70.25,32.5 L75.75,32.5 L75.75,67.5 L70.25,67.5 Z" />
+    <!-- 符杠（升调斜杠） -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M42.25,38.5 L75.75,32.5 L75.75,39 L42.25,45 Z" />
+</vector>

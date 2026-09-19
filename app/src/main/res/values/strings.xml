@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">DPmusic</string>
+    <string name="notification_channel_playback">播放控制</string>
+    <string name="notification_channel_playback_desc">显示当前播放歌曲与控制按钮</string>
+    <string name="widget_label">DPmusic播放控件</string>
+    <string name="widget_description">显示当前播放歌曲与播放控制按钮</string>
+    <string name="widget_default_title">DPmusic</string>
+    <string name="widget_default_artist">未在播放</string>
+    <string name="widget_prev">上一首</string>
+    <string name="widget_toggle">播放/暂停</string>
+    <string name="widget_next">下一首</string>
+</resources>
