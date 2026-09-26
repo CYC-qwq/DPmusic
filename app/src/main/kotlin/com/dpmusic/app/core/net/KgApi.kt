@@ -110,26 +110,44 @@ class KgApi : PlatformApi {
             ?.mapNotNull { it.toPlaylist() } ?: emptyList()
     }
 
+    /**
+     * 歌单全量歌曲（**大歌单专项**）。
+     *
+     * 旧实现：10 页 × 100 = 最多 1000 首，超出部分静默丢失；且任一页请求抛异常
+     * 会让整个歌单加载失败（表现就是「歌曲数一多就获取不到」）。
+     * 现实现：页数上限提升到 [MAX_PAGES]（6000 首），单页失败自动重试一次，
+     * 仍失败则返回已取到的部分（部分可用优于全盘失败）。
+     */
     override suspend fun playlistSongs(playlistId: String): List<Song> {
         val result = mutableListOf<Song>()
         var page = 1
-        val pageSize = 100
-        while (true) {
-            val raw = Http.get(
-                "http://mobilecdn.kugou.com/api/v3/special/song?specialid=$playlistId&page=$page" +
-                    "&pagesize=$pageSize&version=9108&area_code=1&with_res_tag=0",
-                referer = "https://www.kugou.com/",
-            )
-            val data = parseJsonPayload(raw).objOrNull("data")
-            val list = data?.arrOrNull("info") ?: break
+        while (page <= MAX_PAGES) {
+            val data = fetchSongPage(playlistId, page) ?: break
+            val list = data.arrOrNull("info").orEmpty()
             if (list.isEmpty()) break
             list.forEach { el -> el.toSong()?.let(result::add) }
             val total = data.int("total") ?: 0
-            if (result.size >= total || list.size < pageSize) break
+            if (result.size >= total || list.size < PAGE_SIZE) break
             page++
-            if (page > 10) break // 安全上限：单歌单最多解析 1000 首
         }
         return result
+    }
+
+    /** 取单页歌曲；失败重试一次后仍失败返回 null（调用方据此结束分页，保留已取结果） */
+    private suspend fun fetchSongPage(playlistId: String, page: Int): JsonElement? {
+        repeat(2) { attempt ->
+            val raw = runCatching {
+                Http.get(
+                    "http://mobilecdn.kugou.com/api/v3/special/song?specialid=$playlistId&page=$page" +
+                        "&pagesize=$PAGE_SIZE&version=9108&area_code=1&with_res_tag=0",
+                    referer = "https://www.kugou.com/",
+                )
+            }.getOrNull() ?: return@repeat
+            val data = runCatching { parseJsonPayload(raw).objOrNull("data") }.getOrNull()
+            if (data != null) return data
+            if (attempt == 0) kotlinx.coroutines.delay(300L * (attempt + 1))
+        }
+        return null
     }
 
     override suspend fun playlistMeta(playlistId: String): PlaylistSummary? {
@@ -270,5 +288,13 @@ class KgApi : PlatformApi {
             playCount = long("playcount") ?: 0L,
             creator = str("nickname").orEmpty(),
         )
+    }
+
+    companion object {
+        /** 每页条数（酷狗 mobilecdn 接口的稳定值） */
+        private const val PAGE_SIZE = 100
+
+        /** 分页上限：60 页 = 最多 6000 首（远超常规歌单，同时防御异常歌单死循环） */
+        private const val MAX_PAGES = 60
     }
 }

@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.dpmusic.app.ui.player.DownloadViewModel
 import com.dpmusic.app.ui.player.PlayerViewModel
+import com.dpmusic.app.ui.screens.chat.ChatThreadViewModel
+import com.dpmusic.app.ui.screens.chat.ChatViewModel
 import com.dpmusic.app.ui.screens.favorites.FavoritesViewModel
 import com.dpmusic.app.ui.screens.playlist.PlaylistDetailViewModel
 import com.dpmusic.app.ui.screens.rank.RankDetailViewModel
@@ -59,8 +61,19 @@ object AppViewModelFactory : ViewModelProvider.Factory {
 
             modelClass.isAssignableFrom(TogetherViewModel::class.java) ->
                 TogetherViewModel(container.togetherSession, container.ncm)
+            modelClass.isAssignableFrom(ChatViewModel::class.java) ->
+                ChatViewModel(container.ncmChat)
+            modelClass.isAssignableFrom(ChatThreadViewModel::class.java) ->
+                ChatThreadViewModel(container.ncmChat, container.player)
             modelClass.isAssignableFrom(SourceManagerViewModel::class.java) ->
-                SourceManagerViewModel(container.userApi, container.userApiEngine, container.settings)
+                SourceManagerViewModel(
+                    repository = container.userApi,
+                    engine = container.userApiEngine,
+                    settings = container.settings,
+                    plugins = container.musicFreePlugins,
+                    pluginEngine = container.musicFreeEngine,
+                    music = container.musicRepository,
+                )
 
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
         } as T

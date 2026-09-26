@@ -446,7 +446,7 @@ private fun PresetCard(
             .width(132.dp)
             .clickable(onClick = onClick),
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
         border = if (selected) {
             BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
         } else {

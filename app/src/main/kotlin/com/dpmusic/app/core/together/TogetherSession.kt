@@ -363,21 +363,33 @@ class TogetherSession(
 
     /** 发送官方私信邀请（对方在网易云「消息」中收到邀请卡片；DPmusic 端会自动识别提示） */
     fun sendInviteMessage(acceptorId: Long) {
-        val roomId = currentRoomId ?: return
         if (acceptorId <= 0L) {
             _notice.value = "请输入有效的网易云 UID"
             return
         }
         scope.launch {
-            val cookie = ncm.cookie.value
-            if (cookie.isBlank()) {
-                _notice.value = "请先在设置中登录网易云音乐"
-                return@launch
+            val ok = inviteNow(acceptorId)
+            _notice.value = if (ok) {
+                "邀请已发送，对方将在网易云消息中收到邀请卡片"
+            } else {
+                "邀请发送失败：需与对方互相关注、且房间保持在线；可改用「复制邀请链接」"
             }
-            val json = runCatching { api.togetherInviteMessage(cookie, roomId, acceptorId) }.getOrNull()
-            val ok = json?.objOrNull("data")?.bool("result") == true
-            _notice.value = if (ok) "邀请已发送，对方将在网易云消息中收到邀请卡片" else "邀请发送失败，可改用「复制邀请链接」"
         }
+    }
+
+    /**
+     * 发送一起听邀请（官方 `invite/message/send`），返回是否成功。
+     *
+     * 供「选择好友」弹窗使用：需要**同步拿到结果**来决定成功 / 失败反馈，
+     * 因此不走 [_notice] 通道。
+     */
+    suspend fun inviteNow(acceptorId: Long): Boolean {
+        val roomId = currentRoomId ?: return false
+        if (acceptorId <= 0L) return false
+        val cookie = ncm.cookie.value
+        if (cookie.isBlank()) return false
+        val json = runCatching { api.togetherInviteMessage(cookie, roomId, acceptorId) }.getOrNull()
+        return json?.objOrNull("data")?.bool("result") == true
     }
 
     /* ---------------- 歌单同步 ---------------- */

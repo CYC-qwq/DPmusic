@@ -37,6 +37,8 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -46,14 +48,23 @@ import com.dpmusic.app.ui.theme.glassPanelColor
 import kotlin.math.roundToInt
 
 /**
- * 毛玻璃组件（Glassmorphism）：
- * - [GlassSurface]：通用磨砂面板（半透明 + 高光描边 + 斜向光泽）；玻璃关闭时自动回退标准 Surface；
+ * Liquid Glass（液态玻璃）组件：
+ * - [GlassSurface]：通用玻璃面板（真实模糊 + 边缘折射 + 边缘高光 + 斜向光泽）；玻璃关闭时回退标准 Surface；
  * - [GlassBackdrop]：全局流光底（底色 + 封面模糊层 + 漂移光球 + 边缘渐隐），仅玻璃模式绘制；
- * - 真模糊（封面层）仅 Android 12+（API31）生效，低版本自动降级为纯流光底。
+ * - 折射 / 边缘高光需 Android 13+（API33，AGSL RuntimeShader），模糊需 Android 12+（API31），
+ *   低版本自动降级为「半透明 + 高光描边 + 流光底」等效方案。
  */
 
 /** 共享背景层（由宿主提供 / GlassBackdrop 写入）：玻璃面板采样它做真实模糊；null = 不可用 */
 val LocalGlassBlur = staticCompositionLocalOf<GraphicsLayer?> { null }
+
+/**
+ * 玻璃采样偏移（Liquid Glass）：
+ * 覆盖在内容之上的玻璃面板（Mini 条 / 底栏）没有内容从它下面经过（页面内容被 Scaffold 内边距顶开），
+ * 这里让面板改为采样「自己高度之上」的内容 —— 视觉上等价于「内容从玻璃下面滚过去」，
+ * 这正是参考实现（AndroidLiquidGlass）玻璃底栏的观感来源。
+ */
+val LocalGlassSampleOffset = staticCompositionLocalOf { 0.dp }
 
 /** 通用磨砂面板：参数与 M3 Surface 对齐，玻璃模式自动换装 */
 @Composable
@@ -65,6 +76,8 @@ fun GlassSurface(
     tonalElevation: Dp = 0.dp,
     shadowElevation: Dp = 0.dp,
     border: BorderStroke? = null,
+    /** 强调档：更大的不透明度（歌词页 / 弹层等需要可读性的场景） */
+    strong: Boolean = false,
     onClick: (() -> Unit)? = null,
     enabled: Boolean = true,
     interactionSource: MutableInteractionSource? = null,
@@ -101,10 +114,11 @@ fun GlassSurface(
         return
     }
 
-    // 毛玻璃配方：半透明面板 + 高光描边 + 斜向光泽
+    // Liquid Glass 配方：真实模糊 + 边缘折射 + 边缘高光 + 半透明着色 + 斜向光泽
     // （半透明面板不使用投影：Compose 的投影画在面板之下，会从边缘向内透出「脏影」）
-    val panelColor = glassPanelColor(color)
-    val stroke = border ?: BorderStroke(1.dp, glass.borderColor)
+    val panelColor = glassPanelColor(color, strong = strong)
+    // API33+ 边缘高光由 AGSL 着色器沿轮廓绘制（加法混合），替代原来的均匀描边
+    val stroke = border ?: if (runtimeShaderSupported) null else BorderStroke(1.dp, glass.borderColor)
 
     if (onClick != null) {
         Surface(
@@ -119,7 +133,7 @@ fun GlassSurface(
             border = stroke,
             interactionSource = interactionSource,
         ) {
-            GlassFillStack(glass.sheenColor, panelColor, content)
+            GlassFillStack(shape, glass.sheenColor, glass.rimColor, panelColor, content)
         }
     } else {
         Surface(
@@ -131,22 +145,29 @@ fun GlassSurface(
             shadowElevation = 0.dp,
             border = stroke,
         ) {
-            GlassFillStack(glass.sheenColor, panelColor, content)
+            GlassFillStack(shape, glass.sheenColor, glass.rimColor, panelColor, content)
         }
     }
 }
 
 /**
  * 玻璃面板内容栈（自底向上）：
- * 1) 真实背景模糊采样（宿主提供的共享背景层；Android 12+ 生效）
+ * 1) 真实背景模糊 + 边缘折射采样（宿主提供的共享背景层；Android 12+ 生效）
  * 2) 半透明磨砂着色（白玻璃 / 烟熏玻璃）
  * 3) 斜向光泽
  * 4) 面板内容
+ * 5) 边缘高光（AGSL，加法混合；Android 13+ 生效）
  */
 @Composable
-private fun GlassFillStack(sheenColor: Color, tint: Color, content: @Composable () -> Unit) {
+private fun GlassFillStack(
+    shape: Shape,
+    sheenColor: Color,
+    rimColor: Color,
+    tint: Color,
+    content: @Composable () -> Unit,
+) {
     Box {
-        GlassBlurSample()
+        GlassBlurSample(shape)
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -166,34 +187,59 @@ private fun GlassFillStack(sheenColor: Color, tint: Color, content: @Composable 
                 },
         )
         content()
+        GlassRimLight(shape, rimColor)
     }
 }
 
-/** 真实背景模糊采样：把共享背景层按本面板屏幕位置平移绘制，再整体做真实模糊（iOS 式磨砂） */
+/** 边缘高光：沿面板轮廓描一圈强度随方向变化的亮边（与参考实现同款着色器 + 加法混合） */
 @Composable
-private fun BoxScope.GlassBlurSample() {
+private fun BoxScope.GlassRimLight(shape: Shape, color: Color) {
+    if (!runtimeShaderSupported) return
+    val rim = rememberLiquidRim()
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val widthPx = with(density) { LiquidLens.rimWidth.toPx() }
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .drawBehind { rim.draw(this, shape, color, widthPx, density, layoutDirection) },
+    )
+}
+
+/** 真实背景采样：把共享背景层按本面板屏幕位置平移绘制 + 边缘折射环 + 真实模糊（液态玻璃） */
+@Composable
+private fun BoxScope.GlassBlurSample(shape: Shape) {
     val glass = LocalGlass.current
     if (!glass.blurSupported) return
     val layer = LocalGlassBlur.current ?: return
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val sampleOffset = LocalGlassSampleOffset.current
     var pos by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier = Modifier
             .matchParentSize()
             .onGloballyPositioned { pos = it.positionInRoot() }
+            // 模糊在内层绘制之上（与库的「模糊 ⇒ 折射」顺序等价）
             .blur(glass.panelBlurRadius)
-            .drawBehind {
-                translate(-pos.x, -pos.y) {
-                    drawLayer(layer)
-                }
-            },
+            .liquidBackdropSample(
+                layer = layer,
+                shape = shape,
+                density = density,
+                layoutDirection = layoutDirection,
+                position = pos,
+                sampleOffsetPx = with(density) { sampleOffset.toPx() },
+                refractionHeightPx = with(density) { LiquidLens.refractionHeight.toPx() },
+                refractionAmountPx = with(density) { LiquidLens.refractionAmount.toPx() },
+            ),
     )
 }
 
-/** 光球颜色强化：按最大通道归一化提升饱和度；浅色模式混白成粉彩，深色模式保持浓郁 */
+/** 光球颜色强化：按最大通道归一化提升饱和度；浅色模式轻微混白成粉彩，深色模式保持浓郁 */
 private fun vividGlow(c: Color, dark: Boolean): Color {
     val m = maxOf(c.red, c.green, c.blue).coerceAtLeast(0.01f)
     val saturated = Color(c.red / m, c.green / m, c.blue / m, c.alpha)
-    return if (dark) saturated else lerp(saturated, Color.White, 0.35f)
+    return if (dark) saturated else lerp(saturated, Color.White, 0.12f)
 }
 
 /**
@@ -268,6 +314,7 @@ fun GlassBackdrop(
         )
 
         // 2) 封面模糊层（Android 12+ 真实模糊；低版本自动跳过）
+        // Liquid Glass 需要「有东西可透」：封面作为大面积彩色底，透明度与模糊都取更浓的档位
         if (glass.blurSupported && !coverUrl.isNullOrBlank()) {
             AsyncImage(
                 model = coverUrl,
@@ -276,7 +323,7 @@ fun GlassBackdrop(
                 modifier = Modifier
                     .fillMaxSize()
                     .blur(28.dp)
-                    .alpha(0.48f),
+                    .alpha(0.85f),
             )
             Box(
                 Modifier
@@ -285,9 +332,9 @@ fun GlassBackdrop(
                         drawRect(
                             Brush.verticalGradient(
                                 listOf(
-                                    base.copy(alpha = 0.35f),
-                                    base.copy(alpha = 0.18f),
-                                    base.copy(alpha = 0.40f),
+                                    base.copy(alpha = 0.22f),
+                                    base.copy(alpha = 0.10f),
+                                    base.copy(alpha = 0.30f),
                                 ),
                             ),
                         )
@@ -302,13 +349,15 @@ fun GlassBackdrop(
                 .drawBehind {
                     val w = size.width
                     val h = size.height
-                    val r = size.maxDimension * 0.78f
+                    // Liquid Glass 需要「有结构可折射」：光球半径收小、数量增多 → 形成可见色块而非均匀洗白
+                    val r = size.maxDimension * 0.42f
                     // 绘制阶段读取漂移值（暂停时不读取 → 无逐帧重绘；播放时逐帧漂移）
                     val d1 = if (isPlaying) drift1.value else 0.5f
                     val d2 = if (isPlaying) drift2.value else 0.5f
                     val c1 = Offset(w * (0.82f + 0.06f * d1), h * (0.10f + 0.06f * d2))
                     val c2 = Offset(w * (0.12f + 0.08f * d2), h * (0.78f + 0.06f * d1))
                     val c3 = Offset(w * (0.90f - 0.10f * d1), h * (0.55f + 0.08f * d2))
+                    val c4 = Offset(w * (0.30f + 0.08f * d1), h * (0.32f - 0.06f * d2))
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(glow1.copy(alpha = glass.glowAlpha * breathing), Color.Transparent),
@@ -335,6 +384,15 @@ fun GlassBackdrop(
                         ),
                         radius = r * 0.8f,
                         center = c3,
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(glow1.copy(alpha = glass.glowAlpha * 0.55f), Color.Transparent),
+                            center = c4,
+                            radius = r * 0.7f,
+                        ),
+                        radius = r * 0.7f,
+                        center = c4,
                     )
                     drawRect(
                         Brush.verticalGradient(

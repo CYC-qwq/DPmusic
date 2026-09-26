@@ -35,6 +35,7 @@ import com.dpmusic.app.core.util.formatDuration
 import com.dpmusic.app.ui.util.panelCoverSize
 import com.dpmusic.app.ui.util.panelPadding
 import com.dpmusic.app.ui.util.panelShowsExtras
+import com.dpmusic.app.ui.theme.glassPanelColor
 
 /**
  * 横屏/大屏「即时播放浮层」：
@@ -57,7 +58,7 @@ fun NowPlayingPanel(
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         BoxWithConstraints {
             val pad = panelPadding(maxHeight)

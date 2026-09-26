@@ -36,7 +36,8 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Headset
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.QueueMusic
+import androidx.compose.material.icons.outlined.PersonAdd
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.TaskAlt
@@ -65,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,7 +91,11 @@ import com.dpmusic.app.ui.components.CoverArt
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.GlassSurface
 import com.dpmusic.app.ui.components.LoadingState
+import com.dpmusic.app.ui.components.NcmFriendPickerDialog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 一起听页：
@@ -196,7 +202,7 @@ fun TogetherScreen(
                     onExitRoom = vm::exitRoom,
                     onEndRoom = vm::endRoom,
                     onGetShareLink = vm::shareLink,
-                    onSendInviteMessage = vm::sendInviteMessage,
+                    onInviteFriend = vm::inviteFriend,
                     onSyncQueue = vm::syncQueueToRoom,
                     onImportPlaylist = vm::importPlaylist,
                 )
@@ -282,7 +288,7 @@ private fun IdleView(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(rememberScrollState()).padding(bottom = LocalBottomBarInset.current)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -342,7 +348,7 @@ private fun IdleView(
             Spacer(Modifier.height(20.dp))
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Row(
@@ -365,7 +371,7 @@ private fun IdleView(
         Spacer(Modifier.height(20.dp))
         Surface(
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
@@ -400,7 +406,7 @@ private fun InRoomView(
     onExitRoom: () -> Unit,
     onEndRoom: () -> Unit,
     onGetShareLink: () -> String?,
-    onSendInviteMessage: (Long) -> Unit,
+    onInviteFriend: suspend (Long) -> Boolean,
     onSyncQueue: () -> Unit,
     onImportPlaylist: (String) -> Unit,
 ) {
@@ -421,7 +427,10 @@ private fun InRoomView(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(
+                start = 16.dp, top = 16.dp, end = 16.dp,
+                bottom = 16.dp + LocalBottomBarInset.current,
+            ),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
@@ -519,7 +528,7 @@ private fun InRoomView(
     if (showInvite) {
         InviteDialog(
             shareLink = onGetShareLink().orEmpty(),
-            onSendMessage = onSendInviteMessage,
+            onInviteFriend = onInviteFriend,
             onDismiss = { showInvite = false },
         )
     }
@@ -551,7 +560,7 @@ private fun MembersCard(
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -661,22 +670,50 @@ private fun MembersCard(
 @Composable
 private fun InviteDialog(
     shareLink: String,
-    onSendMessage: (Long) -> Unit,
+    onInviteFriend: suspend (Long) -> Boolean,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var uidText by rememberSaveable { mutableStateOf("") }
+    var showPicker by remember { mutableStateOf(false) }
+    var showUidInput by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("邀请好友") },
+        title = { Text("邀请好友一起听") },
         text = {
-            Column {
-                Text("方式一：复制邀请链接发给好友", style = MaterialTheme.typography.labelLarge)
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(bottom = LocalBottomBarInset.current)) {
+                // 方式一：从好友列表选择（推荐，无需记 UID）
+                Text("方式一：邀请网易云好友", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(6.dp))
+                FilledTonalButton(
+                    onClick = { showPicker = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.PersonAdd,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("从好友列表选择")
+                }
+                Text(
+                    text = "对方会在网易云「消息」里收到邀请卡片，点开即可加入。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                // 方式二：复制邀请链接
+                Text("方式二：复制邀请链接发给好友", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(6.dp))
                 Surface(
                     shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
@@ -700,27 +737,47 @@ private fun InviteDialog(
                 ) {
                     Text("复制邀请链接")
                 }
+
                 Spacer(Modifier.height(16.dp))
-                Text("方式二：发送网易云私信邀请", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = uidText,
-                    onValueChange = { uidText = it.filter { c -> c.isDigit() } },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("对方网易云 UID") },
-                    placeholder = { Text("例如 8303321017") },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(8.dp))
-                FilledTonalButton(
-                    onClick = {
-                        val uid = uidText.trim().toLongOrNull() ?: return@FilledTonalButton
-                        onSendMessage(uid)
-                    },
-                    enabled = uidText.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
+
+                // 方式三：按 UID 邀请（折叠，供知道对方 UID 的场景）
+                TextButton(
+                    onClick = { showUidInput = !showUidInput },
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
                 ) {
-                    Text("发送邀请")
+                    Text(if (showUidInput) "收起「按 UID 邀请」" else "按 UID 邀请（进阶）")
+                }
+                if (showUidInput) {
+                    OutlinedTextField(
+                        value = uidText,
+                        onValueChange = { uidText = it.filter { c -> c.isDigit() } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("对方网易云 UID") },
+                        placeholder = { Text("例如 8303321017") },
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            val uid = uidText.trim().toLongOrNull() ?: return@FilledTonalButton
+                            scope.launch {
+                                val ok = runCatching { onInviteFriend(uid) }.getOrDefault(false)
+                                Toast.makeText(
+                                    context,
+                                    if (ok) {
+                                        "邀请已发送"
+                                    } else {
+                                        "邀请发送失败：需与对方互相关注；可改用「复制邀请链接」"
+                                    },
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                        enabled = uidText.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("发送邀请")
+                    }
                 }
             }
         },
@@ -728,6 +785,26 @@ private fun InviteDialog(
             TextButton(onClick = onDismiss) { Text("完成") }
         },
     )
+
+    if (showPicker) {
+        NcmFriendPickerDialog(
+            title = "邀请网易云好友",
+            subtitle = "对方会收到一起听邀请卡片，点开即可加入",
+            headerIcon = Icons.Outlined.PersonAdd,
+            onDismiss = { showPicker = false },
+            onPick = { conv -> onInviteFriend(conv.userId) },
+            onDone = { conv ->
+                showPicker = false
+                Toast.makeText(
+                    context,
+                    "邀请已发送给 ${conv.nickname.ifBlank { "好友" }}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            },
+            actionDescription = "邀请",
+            failureHint = "邀请发送失败：需与对方互相关注、且房间保持在线；可改用「复制邀请链接」",
+        )
+    }
 }
 
 @Composable
@@ -745,7 +822,7 @@ private fun NowPlayingCard(
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -910,7 +987,7 @@ private fun AutoAdvanceCard(
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
@@ -941,7 +1018,7 @@ private fun PlaylistCard(
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(modifier = Modifier.padding(vertical = 20.dp)) {
             Row(
@@ -949,7 +1026,7 @@ private fun PlaylistCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.QueueMusic,
+                    imageVector = Icons.AutoMirrored.Outlined.QueueMusic,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                 )

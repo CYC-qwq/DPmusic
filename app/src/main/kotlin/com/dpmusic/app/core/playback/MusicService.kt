@@ -5,13 +5,19 @@ import android.content.Intent
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.dpmusic.app.AppContainer
 import com.dpmusic.app.MainActivity
 import com.dpmusic.app.R
 import com.dpmusic.app.core.audio.AudioEffectsManager
@@ -45,6 +51,7 @@ class MusicService : MediaSessionService() {
         super.onCreate()
 
         val exo = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(buildMediaSourceFactory())
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -67,7 +74,7 @@ class MusicService : MediaSessionService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        session = MediaSession.Builder(this, exo)
+        session = MediaSession.Builder(this, SkipInterceptingPlayer(exo))
             .setSessionActivity(sessionActivity)
             .build()
 
@@ -78,6 +85,26 @@ class MusicService : MediaSessionService() {
             .build()
         notificationProvider.setSmallIcon(R.drawable.ic_stat_music)
         setMediaNotificationProvider(notificationProvider)
+    }
+
+    /**
+     * 媒体源工厂：在真正发起请求前，按 URL 注入音源要求的 HTTP 头。
+     *
+     * 部分音源（尤其 MusicFree 插件解析出的地址）必须带 Referer / User-Agent 才能播放，
+     * 而 Media3 的 MediaItem 无法携带请求头 —— 这里用 ResolvingDataSource
+     * 在 DataSpec 层面把 [PlaybackHeaderStore] 里登记的请求头补上。
+     */
+    private fun buildMediaSourceFactory(): MediaSource.Factory {
+        val httpFactory = DefaultHttpDataSource.Factory()
+        val resolvingFactory = ResolvingDataSource.Factory(httpFactory) { dataSpec ->
+            val headers = PlaybackHeaderStore.headersFor(dataSpec.uri.toString())
+            if (headers.isEmpty()) {
+                dataSpec
+            } else {
+                dataSpec.buildUpon().setHttpRequestHeaders(headers).build()
+            }
+        }
+        return DefaultMediaSourceFactory(resolvingFactory)
     }
 
     /**
@@ -103,6 +130,34 @@ class MusicService : MediaSessionService() {
         .build()
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+
+    /**
+     * 切歌拦截播放器：把「下一首 / 上一首」统一转交给 App 侧的切歌协调器。
+     *
+     * 覆盖来源：状态栏通知、耳机线控、蓝牙、锁屏、Android Auto —— 这些命令直接作用于
+     * 服务端 Player，原本会绕过 UI 的合并窗口（高频连按 = 高频真实 seek + 高频现解析，
+     * 既费音源配额又抽搐）。路由到 [PlayerConnection.requestExternalSkip] 后，
+     * 与 App 内按钮共享同一套「即时预览 → 合并窗口 → 序号取代 → 预解析」逻辑。
+     *
+     * 若协调器尚未就绪（控制器未连接），回退为 Player 默认行为，保证功能不失效。
+     */
+    private class SkipInterceptingPlayer(delegate: Player) : ForwardingPlayer(delegate) {
+        override fun seekToNextMediaItem() {
+            if (!AppContainer.player.requestExternalSkip(1)) super.seekToNextMediaItem()
+        }
+
+        override fun seekToNext() {
+            if (!AppContainer.player.requestExternalSkip(1)) super.seekToNext()
+        }
+
+        override fun seekToPreviousMediaItem() {
+            if (!AppContainer.player.requestExternalSkip(-1)) super.seekToPreviousMediaItem()
+        }
+
+        override fun seekToPrevious() {
+            if (!AppContainer.player.requestExternalSkip(-1)) super.seekToPrevious()
+        }
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val current = player ?: return

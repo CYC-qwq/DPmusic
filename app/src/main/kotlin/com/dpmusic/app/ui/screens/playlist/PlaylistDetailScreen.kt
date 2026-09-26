@@ -88,6 +88,7 @@ import com.dpmusic.app.ui.components.PlatformChips
 import com.dpmusic.app.ui.components.SearchField
 import com.dpmusic.app.ui.components.SelectionActionBar
 import com.dpmusic.app.ui.components.SearchTopBar
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.components.SongSelectionState
 import com.dpmusic.app.ui.components.filterSongs
@@ -100,6 +101,8 @@ import com.dpmusic.app.ui.util.panelCoverSize
 import com.dpmusic.app.ui.util.panelPadding
 import com.dpmusic.app.ui.util.panelShowsExtras
 import com.dpmusic.app.ui.util.sidePaneWidth
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /** 歌单详情面板（横屏右栏） */
 @Composable
@@ -118,7 +121,7 @@ fun PlaylistDetailPane(
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (playlist != null) {
@@ -166,13 +169,13 @@ fun PlaylistDetailPane(
 
             Box(modifier = Modifier.weight(1f)) {
                 when {
-                    loading -> LoadingState(text = "正在解析歌单…")
+                    loading -> SongListSkeleton(count = 9)
                     error != null -> ErrorState(message = error, onRetry = onRetry)
                     songs.isEmpty() -> EmptyState(title = "歌单暂无歌曲")
                     else -> LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = LocalBottomBarInset.current),
                     ) {
                         itemsIndexed(
                             items = songs,
@@ -183,6 +186,8 @@ fun PlaylistDetailPane(
                                 index = index + 1,
                                 isPlaying = nowPlaying?.song?.stableKey == song.stableKey,
                                 onClick = { onSongClick(index) },
+                                // 增删动画：新项淡入、移除项淡出、其余项平滑补位
+                                modifier = Modifier.animateItem(),
                             )
                         }
                     }
@@ -259,7 +264,7 @@ fun PlaylistDetailScreen(
                 .padding(padding),
         ) {
             when {
-                loading -> LoadingState(text = "正在解析歌单…")
+                loading -> SongListSkeleton(count = 9)
                 error != null -> ErrorState(
                     message = error ?: "加载失败",
                     onRetry = { vm.retry(platform, route.playlistId) },
@@ -329,7 +334,7 @@ private fun PlaylistDetailPortrait(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp),
+        contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
     ) {
         item(key = "header") {
             Column(
@@ -464,7 +469,7 @@ private fun PlaylistDetailLandscape(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp, horizontal = 8.dp),
+                contentPadding = PaddingValues(start = 8.dp, top = 8.dp, end = 8.dp, bottom = LocalBottomBarInset.current),
             ) {
                 item(key = "filter") {
                     ListFilterBar(

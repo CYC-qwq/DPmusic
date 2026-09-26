@@ -22,7 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +40,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.util.formatDuration
+import com.dpmusic.app.ui.theme.LocalGlass
+import com.dpmusic.app.ui.util.rememberDpHaptics
 
 /**
  * 通用歌曲行：
@@ -63,6 +65,13 @@ fun SongRow(
 ) {
     val display = LocalListDisplayOptions.current
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberDpHaptics()
+
+    // 长按处理器：仅在调用方确实提供了长按行为时才绑定，避免"空长按也震动"
+    val longClickHandler: (() -> Unit)? = onLongClick?.let { callback ->
+        { haptics.longPress(); callback() }
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -77,8 +86,12 @@ fun SongRow(
             .combinedClickable(
                 interactionSource = interaction,
                 indication = LocalIndication.current,
-                onClick = onClick,
-                onLongClick = onLongClick,
+                onClick = {
+                    // 触觉与视觉反馈同步：点击即震（系统关闭触觉时自动静默）
+                    haptics.click()
+                    onClick()
+                },
+                onLongClick = longClickHandler,
             )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -201,14 +214,19 @@ fun SwipeableSongRow(
     isPlaying: Boolean = false,
     onLongClick: (() -> Unit)? = null,
 ) {
+    val haptics = rememberDpHaptics()
     val state = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             when (value) {
                 SwipeToDismissBoxValue.StartToEnd -> {
+                    // 移除是"破坏性"操作：用 reject 语义的触觉，给用户明确的重量感
+                    haptics.reject()
                     onDelete()
                     true
                 }
                 SwipeToDismissBoxValue.EndToStart -> {
+                    // 下一首播放是"确认"操作
+                    haptics.confirm()
                     onPlayNext()
                     false
                 }
@@ -225,18 +243,34 @@ fun SwipeableSongRow(
         enableDismissFromStartToEnd = true,
         enableDismissFromEndToStart = true,
     ) {
+        // 行底的作用：盖住 SwipeToDismissBox 的滑动揭示背景（静止时不希望透出红/蓝底）。
+        // - 经典模式：不透明 surface，正常兜底；
+        // - 毛玻璃模式：**不能留不透明底** —— 会把全局流光底整片盖掉，
+        //   列表看起来就是"一坨黑"（`SongRow` 自身背景是 Transparent，这一层是唯一的不透明面）。
+        //   此时靠 SwipeBackground 只在真正拖拽时绘制来保证揭示效果。
+        val glass = LocalGlass.current
         SongRow(
             song = song,
             onClick = onClick,
             isPlaying = isPlaying,
             onLongClick = onLongClick,
-            modifier = Modifier.background(MaterialTheme.colorScheme.surface),
+            modifier = if (glass.enabled) {
+                Modifier
+            } else {
+                Modifier.background(MaterialTheme.colorScheme.surface)
+            },
         )
     }
 }
 
+/**
+ * 滑动揭示背景：仅在**已经拖过阈值**（targetValue ≠ Settled）时绘制。
+ * 静止态不画任何底色 —— 否则毛玻璃模式下行底透明，整列会被 errorContainer/primaryContainer 染色；
+ * 同时也顺带修掉了"小幅拖动先闪一下错误颜色"的问题（未过阈值时不再显示颜色）。
+ */
 @Composable
 private fun SwipeBackground(direction: SwipeToDismissBoxValue) {
+    if (direction == SwipeToDismissBoxValue.Settled) return
     val isDelete = direction == SwipeToDismissBoxValue.StartToEnd
     val container = if (isDelete) {
         MaterialTheme.colorScheme.errorContainer
@@ -261,7 +295,7 @@ private fun SwipeBackground(direction: SwipeToDismissBoxValue) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(
-                imageVector = if (isDelete) Icons.Filled.Delete else Icons.Filled.PlaylistPlay,
+                imageVector = if (isDelete) Icons.Filled.Delete else Icons.AutoMirrored.Filled.PlaylistPlay,
                 contentDescription = null,
                 tint = content,
             )

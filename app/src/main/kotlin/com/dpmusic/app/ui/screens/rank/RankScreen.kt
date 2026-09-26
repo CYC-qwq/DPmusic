@@ -72,6 +72,7 @@ import com.dpmusic.app.core.model.RankSummary
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.playback.NowPlaying
 import com.dpmusic.app.ui.components.AddToPlaylistHost
+import com.dpmusic.app.ui.components.CardGridSkeleton
 import com.dpmusic.app.ui.components.CoverArt
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.EmptyState
@@ -83,6 +84,7 @@ import com.dpmusic.app.ui.components.PillButton
 import com.dpmusic.app.ui.components.PlatformBadge
 import com.dpmusic.app.ui.components.PlatformChips
 import com.dpmusic.app.ui.components.SelectionActionBar
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.components.SongSelectionState
 import com.dpmusic.app.ui.components.filterSongs
@@ -95,6 +97,8 @@ import com.dpmusic.app.ui.util.panelCoverSize
 import com.dpmusic.app.ui.util.panelPadding
 import com.dpmusic.app.ui.util.panelShowsExtras
 import com.dpmusic.app.ui.util.sidePaneWidth
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 排行榜页：
@@ -227,7 +231,7 @@ private fun RankGrid(
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         when {
-            loading -> LoadingState(text = "正在拉取榜单…")
+            loading -> CardGridSkeleton(columns = 2, rows = 3)
             error != null && ranks.isEmpty() -> ErrorState(message = error, onRetry = onRetry)
             ranks.isEmpty() -> EmptyState(
                 icon = Icons.Outlined.EmojiEvents,
@@ -370,7 +374,7 @@ fun RankDetailPane(
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (rank != null) {
@@ -423,7 +427,7 @@ fun RankDetailPane(
 
             Box(modifier = Modifier.weight(1f)) {
                 when {
-                    loading -> LoadingState(text = "正在加载榜单歌曲…")
+                    loading -> SongListSkeleton(count = 8)
                     error != null -> ErrorState(message = error, onRetry = onRetry)
                     songs.isEmpty() -> EmptyState(
                         title = if (filter.isBlank()) "榜单暂无歌曲" else "没有找到匹配的歌曲",
@@ -432,7 +436,7 @@ fun RankDetailPane(
                     else -> LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = LocalBottomBarInset.current),
                     ) {
                         if (filteredSongs.isEmpty() && filter.isNotBlank()) {
                             item(key = "filter_empty") {
@@ -642,7 +646,7 @@ private fun RankDetailSongs(
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         when {
-            loading -> LoadingState(text = "正在加载榜单歌曲…")
+            loading -> SongListSkeleton(count = 8)
             error != null -> ErrorState(
                 message = error,
                 onRetry = onRetry,
@@ -654,7 +658,7 @@ private fun RankDetailSongs(
             else -> LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
             ) {
                 itemsIndexed(
                     items = songs,
@@ -692,7 +696,7 @@ private fun RankDetailInfoPane(
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         BoxWithConstraints {
             val pad = panelPadding(maxHeight)

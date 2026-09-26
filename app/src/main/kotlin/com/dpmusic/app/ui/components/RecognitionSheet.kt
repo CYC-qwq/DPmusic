@@ -417,7 +417,7 @@ private fun PickSourceCard(
     Surface(
         onClick = onClick,
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
         modifier = modifier,
     ) {
         Column(

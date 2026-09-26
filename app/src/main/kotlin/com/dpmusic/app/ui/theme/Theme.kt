@@ -96,7 +96,7 @@ fun DPmusicTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     themeColor: String = "default",
-    /** 毛玻璃外观模式：透明底 + 全局流光底 + 半透明磨砂面板 */
+    /** 玻璃风格模式：透明底 + 全局流光底 + 半透明磨砂面板 */
     glass: Boolean = false,
     content: @Composable () -> Unit,
 ) {

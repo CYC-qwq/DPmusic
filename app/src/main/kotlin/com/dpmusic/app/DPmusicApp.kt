@@ -23,5 +23,9 @@ class DPmusicApp : Application() {
         SingletonImageLoader.setSafe { context ->
             StorageManager.buildImageLoader(context)
         }
+
+        // 存储守护：启动即检查一次，之后每 10 分钟检查一次；
+        // 缓存总占用超过「最大可占用」时自动清理（临时文件 + 图片缓存 LRU 收缩）
+        StorageManager.startAutoClean(this)
     }
 }

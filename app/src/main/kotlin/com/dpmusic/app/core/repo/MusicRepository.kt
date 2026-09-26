@@ -10,7 +10,9 @@ import com.dpmusic.app.core.net.LxResolver
 import com.dpmusic.app.core.net.PlatformApi
 import com.dpmusic.app.core.net.ResolveException
 import com.dpmusic.app.core.net.ResolvedUrl
+import com.dpmusic.app.core.script.MusicFreeResolver
 import com.dpmusic.app.core.script.ScriptMusicResolver
+import com.dpmusic.app.core.script.SourceTestResult
 import com.dpmusic.app.core.util.AppLogger
 import kotlinx.coroutines.CancellationException
 
@@ -33,7 +35,9 @@ class MusicRepository(
     private val apis: Map<MusicPlatform, PlatformApi>,
     private val resolver: LxResolver,
     private val scriptResolver: ScriptMusicResolver,
-    private val priorityProvider: () -> SourcePriority = { SourcePriority.SCRIPT_FIRST },
+    private val priorityProvider: () -> SourcePriority = { SourcePriority.KEY_FIRST },
+    /** MusicFree 插件解析器（可选）：Key 与脚本都失败时的最后一道音源兜底 */
+    private val pluginResolver: MusicFreeResolver? = null,
 ) {
 
     fun api(platform: MusicPlatform): PlatformApi = apis.getValue(platform)
@@ -111,8 +115,79 @@ class MusicRepository(
         throw ResolveException(lastError?.message ?: "所有音源均解析失败", song.platform)
     }
 
-    /** 单曲解析：按「音源优先级」设置决定脚本与远端代理的先后与回退 */
+    /* ---------------- 音源可用性测试（供「音源管理」页逐项自检） ---------------- */
+
+    /** 测试 Key 远端代理音源 */
+    suspend fun testKeySource(song: Song, quality: PlayQuality = PlayQuality.HIGH): SourceTestResult {
+        val started = System.currentTimeMillis()
+        return try {
+            val resolved = resolver.resolve(song, quality)
+            SourceTestResult("音源 Key 代理", true, "解析成功 · ${resolved.url.take(56)}…", elapsed(started))
+        } catch (e: Exception) {
+            SourceTestResult("音源 Key 代理", false, e.message ?: "解析失败", elapsed(started))
+        }
+    }
+
+    /** 测试 LX 自定义脚本音源 */
+    suspend fun testScriptSource(song: Song, quality: PlayQuality = PlayQuality.HIGH): SourceTestResult {
+        val started = System.currentTimeMillis()
+        if (!scriptResolver.canResolve(song.platform)) {
+            return SourceTestResult("LX 脚本音源", false, "未启用脚本或脚本不支持 ${song.platform.label}", 0L)
+        }
+        return try {
+            val resolved = scriptResolver.resolve(song, quality)
+            SourceTestResult("LX 脚本音源", true, "解析成功 · ${resolved.url.take(56)}…", elapsed(started))
+        } catch (e: Exception) {
+            SourceTestResult("LX 脚本音源", false, e.message ?: "解析失败", elapsed(started))
+        }
+    }
+
+    /** 测试 MusicFree 插件音源 */
+    suspend fun testPluginSource(song: Song): SourceTestResult =
+        pluginResolver?.testResolve(song)
+            ?: SourceTestResult("MusicFree 插件", false, "未导入或未启用插件", 0L)
+
+    /** 测试某平台直连 API（搜索链路） */
+    suspend fun testPlatformApi(platform: MusicPlatform, keyword: String = "晴天"): SourceTestResult {
+        val started = System.currentTimeMillis()
+        return try {
+            val songs = api(platform).searchSongs(keyword, 1, 3)
+            if (songs.isEmpty()) {
+                SourceTestResult("${platform.label} API", false, "接口可用但未返回结果", elapsed(started))
+            } else {
+                SourceTestResult("${platform.label} API", true, "搜索到 ${songs.size} 首（如「${songs.first().title}」）", elapsed(started))
+            }
+        } catch (e: Exception) {
+            SourceTestResult("${platform.label} API", false, e.message ?: "请求失败", elapsed(started))
+        }
+    }
+
+    private fun elapsed(startedAt: Long): Long = System.currentTimeMillis() - startedAt
+
+    /**
+     * 单曲解析：先走「Key / 脚本」优先级链，两者都失败时再用 MusicFree 插件兜底。
+     *
+     * 插件放在最后是有意为之：插件是用户自行导入的第三方脚本，可靠性参差，
+     * 让它只在官方链路救不回来时出手，既不拖慢常规解析，又能显著提高冷门歌曲的成功率。
+     */
     private suspend fun resolveWithFallback(song: Song, quality: PlayQuality): ResolvedUrl {
+        try {
+            return resolveWithKeyOrScript(song, quality)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val plugin = pluginResolver
+            if (plugin != null && plugin.canResolve()) {
+                AppLogger.w(TAG, "Key / 脚本均失败，尝试插件音源：${e.message}")
+                val resolved = plugin.resolve(song, quality)
+                return ResolvedUrl(resolved.url, resolved.qualityId)
+            }
+            throw e
+        }
+    }
+
+    /** 单曲解析：按「音源优先级」设置决定脚本与远端代理的先后与回退 */
+    private suspend fun resolveWithKeyOrScript(song: Song, quality: PlayQuality): ResolvedUrl {
         val priority = priorityProvider()
         val scriptAvailable = scriptResolver.canResolve(song.platform)
 

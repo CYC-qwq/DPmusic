@@ -5,6 +5,7 @@ import com.dpmusic.app.core.audio.AudioEffectsManager
 import com.dpmusic.app.core.data.DislikeRepository
 import com.dpmusic.app.core.data.FavoritesRepository
 import com.dpmusic.app.core.data.HistoryRepository
+import com.dpmusic.app.core.data.NcmChatRepository
 import com.dpmusic.app.core.data.NcmRepository
 import com.dpmusic.app.core.data.NcmSyncService
 import com.dpmusic.app.core.data.EqualizerRepository
@@ -27,6 +28,9 @@ import com.dpmusic.app.core.playback.NcmFmController
 import com.dpmusic.app.core.playback.PlayerConnection
 import com.dpmusic.app.core.playback.SleepTimerController
 import com.dpmusic.app.core.repo.MusicRepository
+import com.dpmusic.app.core.script.MusicFreeEngine
+import com.dpmusic.app.core.script.MusicFreePluginRepository
+import com.dpmusic.app.core.script.MusicFreeResolver
 import com.dpmusic.app.core.script.ScriptMusicResolver
 import com.dpmusic.app.core.script.UserApiEngine
 import com.dpmusic.app.core.script.UserApiRepository
@@ -54,6 +58,7 @@ object AppContainer {
             resolver = LxResolver(apiKeyProvider = { settings.settings.value.lxApiKey }),
             scriptResolver = scriptResolver,
             priorityProvider = { settings.settings.value.sourcePriority },
+            pluginResolver = musicFreeResolver,
         )
     }
 
@@ -73,6 +78,9 @@ object AppContainer {
     /** 网易云 eapi 直连客户端 */
     val ncmApi: NcmApi by lazy { NcmApi(deviceIdProvider = { ncmDeviceId }) }
 
+    /** 网易云私信（聊天）：会话列表 / 聊天记录 / 发送文本与卡片 */
+    val ncmChat: NcmChatRepository by lazy { NcmChatRepository(api = ncmApi, ncm = ncm) }
+
     /** 一起听会话（进程级单例：轮询同步 + 心跳 + 播放跟随） */
     val togetherSession: TogetherSession by lazy {
         TogetherSession(
@@ -88,7 +96,7 @@ object AppContainer {
         NcmFmController(api = ncmApi, ncm = ncm, player = player, dislike = dislike)
     }
 
-    /** 红心自动双向同步（需登录 Cookie；启动延迟 + 定期 + 手动触发） */
+    /** 红心同步（单向：云端 → 本地；需登录 Cookie；启动延迟 + 定期 + 手动触发） */
     val ncmSync: NcmSyncService by lazy {
         NcmSyncService(api = ncmApi, ncm = ncm, favorites = favorites)
     }
@@ -112,6 +120,17 @@ object AppContainer {
 
     /** 自定义音源脚本仓库（导入 / 启用 / 删除；激活脚本自动加载到引擎） */
     val userApi: UserApiRepository by lazy { UserApiRepository(appContext.appDataStore, userApiEngine) }
+
+    /** MusicFree 插件引擎（QuickJS；MusicFree 音源插件支持，与 LX 脚本引擎相互独立） */
+    val musicFreeEngine: MusicFreeEngine by lazy { MusicFreeEngine(appContext) }
+
+    /** MusicFree 插件解析器（Key 与脚本都失败时的最后一道音源兜底） */
+    val musicFreeResolver: MusicFreeResolver by lazy { MusicFreeResolver(musicFreeEngine) }
+
+    /** MusicFree 插件仓库（导入 / 启用 / 删除 / 用户变量；激活插件自动挂载） */
+    val musicFreePlugins: MusicFreePluginRepository by lazy {
+        MusicFreePluginRepository(appContext.appDataStore, musicFreeEngine)
+    }
 
     /** 下载任务队列（串行执行 + 持久化 + 元数据增强） */
     val downloadTasks: DownloadTaskStore by lazy {
@@ -193,6 +212,8 @@ object AppContainer {
         togetherInviteWatcher.start()
         // 预热自定义音源：已激活的脚本启动即加载
         userApi
+        // 预热 MusicFree 插件：已激活的插件启动即挂载
+        musicFreePlugins
         // 预热 WebDAV 数据同步：自动同步监听（收藏 / 歌单 / 屏蔽规则变更后节流上传）
         syncManager
         // 预热桌面播放控件：播放状态 → 小组件推送

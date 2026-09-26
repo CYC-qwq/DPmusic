@@ -47,6 +47,7 @@ import com.dpmusic.app.ui.components.filterSongs
 import com.dpmusic.app.ui.components.rememberAddToPlaylistHost
 import com.dpmusic.app.ui.components.rememberSongSelection
 import com.dpmusic.app.ui.navigation.UserPlaylistDetailRoute
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 本地歌单详情：
@@ -142,7 +143,7 @@ fun UserPlaylistDetailScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     item(key = "filter") {
                         ListFilterBar(
@@ -172,6 +173,8 @@ fun UserPlaylistDetailScreen(
                             onLongClick = { selection.start(song.stableKey) },
                             onRemove = { vm.removeSong(current.id, song.stableKey) },
                             onAddToOther = { addHost.show(listOf(song)) },
+                            // 增删动画：移除项淡出、其余项平滑补位
+                            modifier = Modifier.animateItem(),
                         )
                     }
                 }
@@ -213,11 +216,13 @@ private fun UserSongRow(
     onLongClick: () -> Unit,
     onRemove: () -> Unit,
     onAddToOther: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box {
         SongRow(
             song = song,
+            modifier = modifier,
             index = index + 1,
             isPlaying = isPlaying,
             onClick = onClick,

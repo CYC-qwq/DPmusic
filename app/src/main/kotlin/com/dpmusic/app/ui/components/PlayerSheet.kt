@@ -1,6 +1,7 @@
 @file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package com.dpmusic.app.ui.components
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
@@ -22,6 +23,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,7 +61,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
@@ -75,7 +77,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Lyrics
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Speed
@@ -108,14 +110,17 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -127,6 +132,7 @@ import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.playback.NowPlaying
 import com.dpmusic.app.core.util.formatDuration
 import com.dpmusic.app.ui.player.PlayerLyricsState
+import com.dpmusic.app.ui.util.rememberDpHaptics
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -192,6 +198,8 @@ fun PlayerSheetHost(
     var showSpeed by remember { mutableStateOf(false) }
     var showSleepTimer by remember { mutableStateOf(false) }
     var showDesktopLyric by remember { mutableStateOf(false) }
+    var showNcmShare by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     Surface(
         modifier = modifier
@@ -205,6 +213,26 @@ fun PlayerSheetHost(
             .clip(RoundedCornerShape(28.dp * (1f - p))),
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
     ) {
+        // 【玻璃规范 L0｜不透明层】播放页是长时间阅读场景（歌词），不做透明玻璃：
+        // 用「封面调色板染色的不透明竖向渐变」做底，既保留专辑氛围又保证对比度。
+        val glassBase = MaterialTheme.colorScheme.surfaceContainerLowest
+        val glassMix = if (isSystemInDarkTheme()) 0.26f else 0.34f
+        val bgTop = paletteColors.getOrNull(0)?.let { lerp(glassBase, it, glassMix) } ?: glassBase
+        val bgMid = paletteColors.getOrNull(1)?.let { lerp(glassBase, it, glassMix * 0.62f) } ?: glassBase
+        val bgLow = paletteColors.getOrNull(2)?.let { lerp(glassBase, it, glassMix * 0.34f) } ?: glassBase
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    drawRect(
+                        Brush.verticalGradient(
+                            colors = listOf(bgTop, bgMid, bgLow, glassBase),
+                            startY = 0f,
+                            endY = size.height,
+                        ),
+                    )
+                },
+        )
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isLandscape = maxWidth > maxHeight * 1.15f
             val openMenu: () -> Unit = { showMenu = true }
@@ -389,6 +417,25 @@ fun PlayerSheetHost(
                         song = shareSong,
                         quality = nowPlaying?.quality ?: PlayQuality.HIGH,
                         onDismiss = { showShare = false },
+                        onShareToNcm = { showNcmShare = true },
+                    )
+                }
+            }
+
+            // 分享给网易云好友（歌曲卡片 → 网易云私信）
+            if (showNcmShare) {
+                nowPlaying?.song?.let { ncmSong ->
+                    ShareToNcmFriendDialog(
+                        song = ncmSong,
+                        onDismiss = { showNcmShare = false },
+                        onSent = { nickname ->
+                            showNcmShare = false
+                            Toast.makeText(
+                                context,
+                                "已分享给 ${nickname.ifBlank { "好友" }}",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
                     )
                 }
             }
@@ -583,7 +630,7 @@ private fun PlayerContentPortrait(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerLow),
             ) {
                 Column(
                     modifier = Modifier
@@ -946,6 +993,7 @@ private fun PlayerProgressBar(
     var dragValue by remember { mutableStateOf<Float?>(null) }
     val duration = durationMs.coerceAtLeast(1L)
     val displayValue = dragValue ?: positionMs.toFloat()
+    val haptics = rememberDpHaptics()
 
     Column(modifier = modifier.fillMaxWidth()) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -981,6 +1029,8 @@ private fun PlayerProgressBar(
                 onValueChangeFinished = {
                     dragValue?.let { onSeek(it.toLong()) }
                     dragValue = null
+                    // 松手落位：轻震一下，给"已定位"的确认感
+                    haptics.gestureEnd()
                 },
                 valueRange = 0f..duration.toFloat(),
                 thumb = { state ->
@@ -1072,6 +1122,8 @@ private fun PlayerControlsRow(
     val sideIcon = if (compact) 22.dp else 28.dp
     val playIcon = if (compact) 32.dp else 36.dp
 
+    val haptics = rememberDpHaptics()
+
     val repeatSource = remember { MutableInteractionSource() }
     val previousSource = remember { MutableInteractionSource() }
     val playSource = remember { MutableInteractionSource() }
@@ -1090,7 +1142,7 @@ private fun PlayerControlsRow(
     ) {
         // 循环模式（左一）
         IconButton(
-            onClick = onToggleRepeat,
+            onClick = { haptics.tick(); onToggleRepeat() },
             interactionSource = repeatSource,
             modifier = Modifier.graphicsLayer {
                 scaleX = repeatScale
@@ -1109,7 +1161,7 @@ private fun PlayerControlsRow(
 
         // 上一首（左二）
         IconButton(
-            onClick = onPrevious,
+            onClick = { haptics.click(); onPrevious() },
             interactionSource = previousSource,
             modifier = Modifier.graphicsLayer {
                 scaleX = previousScale
@@ -1125,7 +1177,7 @@ private fun PlayerControlsRow(
 
         // 播放 / 暂停（中央主键，主色光晕投影，缓冲时显示加载圈）
         FilledIconButton(
-            onClick = onTogglePlay,
+            onClick = { haptics.click(); onTogglePlay() },
             interactionSource = playSource,
             modifier = Modifier
                 .size(playSize)
@@ -1164,7 +1216,7 @@ private fun PlayerControlsRow(
 
         // 下一首（右二）
         IconButton(
-            onClick = onNext,
+            onClick = { haptics.click(); onNext() },
             interactionSource = nextSource,
             modifier = Modifier.graphicsLayer {
                 scaleX = nextScale
@@ -1181,7 +1233,7 @@ private fun PlayerControlsRow(
         // 随机播放（右一，开启时底部浮现微型发光点）
         Box {
             IconButton(
-                onClick = onToggleShuffle,
+                onClick = { haptics.tick(); onToggleShuffle() },
                 interactionSource = shuffleSource,
                 modifier = Modifier.graphicsLayer {
                     scaleX = shuffleScale
@@ -1388,7 +1440,7 @@ private fun PlayerMenuSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 PlayerQuickAction(
-                    icon = Icons.Filled.QueueMusic,
+                    icon = Icons.AutoMirrored.Filled.QueueMusic,
                     label = "播放队列",
                     onClick = { onOpenQueue() },
                     modifier = Modifier.weight(1f),
@@ -1402,7 +1454,7 @@ private fun PlayerMenuSheet(
                     )
                 }
                 PlayerQuickAction(
-                    icon = Icons.Outlined.PlaylistAdd,
+                    icon = Icons.AutoMirrored.Outlined.PlaylistAdd,
                     label = "添加到歌单",
                     onClick = { onAddToPlaylist() },
                     modifier = Modifier.weight(1f),
@@ -1793,9 +1845,12 @@ private fun FavoriteButton(
 ) {
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(1f) }
+    val haptics = rememberDpHaptics()
 
     IconButton(
         onClick = {
+            // 新收藏 → 确认感（有"收下了"的满足）；取消收藏 → 轻触
+            if (isFavorite) haptics.tick() else haptics.confirm()
             onClick()
             scope.launch {
                 scale.snapTo(0.75f)

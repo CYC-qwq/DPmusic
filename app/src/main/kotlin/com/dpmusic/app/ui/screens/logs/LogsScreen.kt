@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.Article
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Share
@@ -51,6 +51,7 @@ import com.dpmusic.app.core.util.LogLevel
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.EmptyState
 import java.io.File
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /** 日志筛选 */
 private enum class LogFilter(val label: String) {
@@ -135,7 +136,7 @@ fun LogsScreen(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             if (filtered.isEmpty()) {
                 EmptyState(
-                    icon = Icons.Outlined.Article,
+                    icon = Icons.AutoMirrored.Outlined.Article,
                     title = "暂无日志",
                     subtitle = "运行过程中的记录与异常会显示在这里",
                     modifier = Modifier.fillMaxSize(),
@@ -143,7 +144,7 @@ fun LogsScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 8.dp),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = LocalBottomBarInset.current),
                 ) {
                     itemsIndexed(filtered.asReversed()) { _, entry ->
                         LogEntryRow(entry = entry)

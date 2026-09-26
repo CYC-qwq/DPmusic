@@ -27,11 +27,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material.icons.outlined.PlaylistAdd
-import androidx.compose.material.icons.outlined.QueueMusic
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.TrendingUp
+import androidx.compose.material.icons.automirrored.outlined.TrendingUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -77,9 +77,12 @@ import com.dpmusic.app.ui.components.SearchField
 import com.dpmusic.app.ui.components.SearchMode
 import com.dpmusic.app.ui.components.SearchModeToggle
 import com.dpmusic.app.ui.components.SearchTopBar
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.components.staggeredEntrance
 import com.dpmusic.app.ui.util.sidePaneWidth
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 搜索页（歌曲 / 歌单双模式）：
@@ -231,22 +234,15 @@ private fun SearchPortrait(
         Spacer(Modifier.height(4.dp))
         Box(modifier = Modifier.weight(1f)) {
             if (query.isBlank() && (history.isNotEmpty() || hotSearch.isNotEmpty())) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    if (history.isNotEmpty()) {
-                        SearchHistoryPanel(
-                            history = history,
-                            onPick = vm::applyHistory,
-                            onRemove = vm::removeHistory,
-                            onClear = vm::clearHistory,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    HotSearchPanel(
-                        keywords = hotSearch,
-                        onPick = vm::applyHotSearch,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                SearchIdlePanels(
+                    history = history,
+                    hotSearch = hotSearch,
+                    onPickHistory = vm::applyHistory,
+                    onRemoveHistory = vm::removeHistory,
+                    onClearHistory = vm::clearHistory,
+                    onPickHot = vm::applyHotSearch,
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else if (mode == SearchMode.Songs) {
                 SearchResults(
                     vm = vm,
@@ -323,22 +319,15 @@ private fun SearchLandscape(
                 Spacer(Modifier.height(if (compactHeight) 4.dp else 8.dp))
                 Box(modifier = Modifier.weight(1f)) {
                     if (query.isBlank() && (history.isNotEmpty() || hotSearch.isNotEmpty())) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            if (history.isNotEmpty()) {
-                                SearchHistoryPanel(
-                                    history = history,
-                                    onPick = vm::applyHistory,
-                                    onRemove = vm::removeHistory,
-                                    onClear = vm::clearHistory,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                            HotSearchPanel(
-                                keywords = hotSearch,
-                                onPick = vm::applyHotSearch,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
+                        SearchIdlePanels(
+                            history = history,
+                            hotSearch = hotSearch,
+                            onPickHistory = vm::applyHistory,
+                            onRemoveHistory = vm::removeHistory,
+                            onClearHistory = vm::clearHistory,
+                            onPickHot = vm::applyHotSearch,
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     } else if (mode == SearchMode.Songs) {
                         SearchResults(
                             vm = vm,
@@ -399,7 +388,7 @@ private fun SearchResults(
 
     Box(modifier = modifier.fillMaxSize()) {
         when {
-            loading -> LoadingState(text = if (linkPlatform != null) "正在解析链接…" else "正在搜索「$query」…")
+            loading -> SongListSkeleton(count = 8)
 
             error != null && results.isEmpty() -> ErrorState(
                 message = error ?: "搜索失败",
@@ -423,7 +412,7 @@ private fun SearchResults(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     if (lp != null) {
                         item(key = "link_banner") { LinkBanner(platform = lp) }
@@ -474,7 +463,7 @@ private fun PlaylistResults(
 
     Box(modifier = modifier.fillMaxSize()) {
         when {
-            loading -> LoadingState(text = "正在搜索歌单「$query」…")
+            loading -> SongListSkeleton(count = 7)
 
             error != null && playlists.isEmpty() -> ErrorState(
                 message = error ?: "搜索失败",
@@ -482,13 +471,13 @@ private fun PlaylistResults(
             )
 
             query.isBlank() -> EmptyState(
-                icon = Icons.Outlined.QueueMusic,
+                icon = Icons.AutoMirrored.Outlined.QueueMusic,
                 title = "搜索三平台歌单",
                 subtitle = "输入关键词，发现更多优质歌单",
             )
 
             playlists.isEmpty() -> EmptyState(
-                icon = Icons.Outlined.QueueMusic,
+                icon = Icons.AutoMirrored.Outlined.QueueMusic,
                 title = "没有找到与「$query」相关的歌单",
                 subtitle = "试试更换关键词或切换平台",
             )
@@ -496,7 +485,7 @@ private fun PlaylistResults(
             else -> LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
             ) {
                 itemsIndexed(
                     items = playlists,
@@ -519,7 +508,7 @@ private fun PlaylistResults(
                                     )
                                 } else {
                                     Icon(
-                                        imageVector = Icons.Outlined.PlaylistAdd,
+                                        imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
                                         contentDescription = "保存到我的歌单",
                                         tint = MaterialTheme.colorScheme.primary,
                                     )
@@ -554,7 +543,7 @@ private fun SearchSuggestionPanel(
     if (suggestions.isEmpty()) return
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
         tonalElevation = 3.dp,
         shadowElevation = 8.dp,
         modifier = modifier.fillMaxWidth(),
@@ -587,9 +576,55 @@ private fun SearchSuggestionPanel(
     }
 }
 
+/* ---------------- 空闲态：搜索历史 + 热搜榜 ---------------- */
+
+/**
+ * 空闲态（未输入）容器：搜索历史与热搜榜**共用一个滚动区**。
+ *
+ * 为什么必须合并：底部栏 inset（mini 条 + 导航栏，竖屏约 140dp）只能加在
+ * **真正滚到屏幕底部的那一层**。历史面板下面还有热搜榜，早期实现把它也加了 inset，
+ * 于是历史词条下方多出一整块死空白（≈ mini 条 + 导航栏的高度），把热搜榜压到屏幕下半部分。
+ *
+ * 合并后：inset 只出现一次，且仅在内容滚到尽头时才可见 —— 内容从玻璃栏下方穿过，
+ * 正是 `LocalBottomBarInset` 想要的观感。同时避免了「历史词条过多时把热搜榜挤成 0 高」。
+ */
+@Composable
+private fun SearchIdlePanels(
+    history: List<String>,
+    hotSearch: List<String>,
+    onPickHistory: (String) -> Unit,
+    onRemoveHistory: (String) -> Unit,
+    onClearHistory: () -> Unit,
+    onPickHot: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = LocalBottomBarInset.current),
+    ) {
+        if (history.isNotEmpty()) {
+            SearchHistoryPanel(
+                history = history,
+                onPick = onPickHistory,
+                onRemove = onRemoveHistory,
+                onClear = onClearHistory,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (hotSearch.isNotEmpty()) {
+            HotSearchPanel(
+                keywords = hotSearch,
+                onPick = onPickHot,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
 /* ---------------- 搜索历史 ---------------- */
 
-/** 搜索历史面板：标题行（清空）+ 流式词条（点按搜索 / 点 × 删除单条） */
+/** 搜索历史面板：标题行（清空）+ 流式词条（点按搜索 / 点 × 删除单条）。滚动由外层统一负责。 */
 @Composable
 private fun SearchHistoryPanel(
     history: List<String>,
@@ -599,9 +634,9 @@ private fun SearchHistoryPanel(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+        // 注意：这里**不能**加 LocalBottomBarInset —— 它不是屏幕最底部（下面还有热搜榜）。
+        // 底部 inset 由外层 SearchIdlePanels 统一加一次，否则会出现大块死空白。
+        modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -634,7 +669,7 @@ private fun SearchHistoryPanel(
     }
 }
 
-/** 热搜榜面板：标题 + 排名列表（点按填入搜索框） */
+/** 热搜榜面板：标题 + 排名列表（点按填入搜索框）。滚动由外层统一负责。 */
 @Composable
 private fun HotSearchPanel(
     keywords: List<String>,
@@ -643,16 +678,15 @@ private fun HotSearchPanel(
 ) {
     if (keywords.isEmpty()) return
     Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+        // 同 SearchHistoryPanel：底部 inset 归外层 SearchIdlePanels，这里只留水平内边距。
+        modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = Icons.Outlined.TrendingUp,
+                imageVector = Icons.AutoMirrored.Outlined.TrendingUp,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp),
@@ -704,7 +738,7 @@ private fun HistoryChip(
     Surface(
         onClick = onPick,
         shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         Row(
             modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),

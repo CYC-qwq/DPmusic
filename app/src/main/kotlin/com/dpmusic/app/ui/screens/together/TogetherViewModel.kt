@@ -39,6 +39,9 @@ class TogetherViewModel(
     fun exitRoom() = session.exitRoom()
     fun shareLink(): String? = session.shareLink()
     fun sendInviteMessage(acceptorId: Long) = session.sendInviteMessage(acceptorId)
+
+    /** 发送一起听邀请并返回结果（供「选择好友」弹窗做成功/失败反馈） */
+    suspend fun inviteFriend(acceptorId: Long): Boolean = session.inviteNow(acceptorId)
     fun syncQueueToRoom() = session.syncQueueToRoom()
     fun importPlaylist(playlistId: String) = session.importPlaylistToRoom(playlistId)
     fun openChat(): Boolean = session.openChat()

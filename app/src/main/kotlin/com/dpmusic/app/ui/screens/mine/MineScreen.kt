@@ -1,11 +1,17 @@
 package com.dpmusic.app.ui.screens.mine
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Headset
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -26,14 +32,18 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpmusic.app.AppViewModelFactory
+import com.dpmusic.app.core.model.ChatListState
 import com.dpmusic.app.ui.components.AddToPlaylistHost
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.rememberAddToPlaylistHost
+import com.dpmusic.app.ui.screens.chat.ChatViewModel
 import com.dpmusic.app.ui.screens.favorites.FavoritesContent
 import com.dpmusic.app.ui.screens.favorites.FavoritesViewModel
 import com.dpmusic.app.ui.screens.recent.RecentContent
@@ -51,9 +61,17 @@ fun MineScreen(
     windowSizeClass: WindowSizeClass,
     onOpenSettings: () -> Unit,
     onOpenTogether: () -> Unit,
+    onOpenChat: () -> Unit,
 ) {
     val favoritesVm: FavoritesViewModel = viewModel(factory = AppViewModelFactory)
     val recentVm: RecentViewModel = viewModel(factory = AppViewModelFactory)
+    val chatVm: ChatViewModel = viewModel(factory = AppViewModelFactory)
+
+    val chatState by chatVm.state.collectAsStateWithLifecycle()
+    val unreadChat = (chatState as? ChatListState.Ready)
+        ?.conversations
+        ?.sumOf { it.unreadCount }
+        ?: 0
 
     val favorites by favoritesVm.favorites.collectAsStateWithLifecycle()
     val recent by recentVm.recent.collectAsStateWithLifecycle()
@@ -75,6 +93,21 @@ fun MineScreen(
                 title = "我的",
                 windowSizeClass = windowSizeClass,
                 actions = {
+                    IconButton(onClick = onOpenChat) {
+                        Box {
+                            Icon(Icons.Outlined.Forum, contentDescription = "消息")
+                            if (unreadChat > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 2.dp, y = (-2).dp)
+                                        .size(if (unreadChat > 9) 10.dp else 8.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.error),
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = onOpenTogether) {
                         Icon(Icons.Outlined.Headset, contentDescription = "一起听")
                     }

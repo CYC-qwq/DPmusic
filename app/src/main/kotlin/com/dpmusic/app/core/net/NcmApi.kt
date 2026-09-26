@@ -261,20 +261,28 @@ class NcmApi(private val deviceIdProvider: () -> String) {
 
     /* ---------- 私信（一起听邀请卡片识别） ---------- */
 
-    /** 私信会话列表（含最近一条消息；用于识别好友发来的一起听邀请卡片） */
-    suspend fun msgPrivateUsers(cookie: String, limit: Int = 20): JsonElement =
+    /** 私信会话列表（含最近一条消息；既用于一起听邀请识别，也用于「消息」列表页） */
+    suspend fun msgPrivateUsers(cookie: String, limit: Int = 20, offset: Int = 0): JsonElement =
         eapi(cookie, "/api/msg/private/users", buildJsonObject {
-            put("offset", 0)
+            put("offset", offset)
             put("limit", limit)
             put("total", "true")
         })
-
-    /** 与指定好友的私信历史（用于读取完整邀请卡片：msg 字段内含 roomId / inviterId） */
-    suspend fun msgPrivateHistory(cookie: String, userId: Long, limit: Int = 20): JsonElement =
+    /**
+     * 与指定好友的私信历史（时间倒序）。
+     *
+     * @param before 只取该时间戳（毫秒）之前的消息；0 = 最新一页
+     */
+    suspend fun msgPrivateHistory(
+        cookie: String,
+        userId: Long,
+        limit: Int = 20,
+        before: Long = 0L,
+    ): JsonElement =
         eapi(cookie, "/api/msg/private/history", buildJsonObject {
             put("userId", userId)
             put("limit", limit)
-            put("time", 0)
+            put("time", before)
             put("total", "true")
         })
 
@@ -294,6 +302,43 @@ class NcmApi(private val deviceIdProvider: () -> String) {
             put("type", "song")
             put("userIds", "[$userId]")
         })
+
+    /** 发送私信歌单卡片（聊天通道；type=playlist） */
+    suspend fun msgPrivateSendPlaylist(
+        cookie: String,
+        userId: Long,
+        playlistId: String,
+        msg: String = "",
+    ): JsonElement =
+        eapi(cookie, "/api/msg/private/send", buildJsonObject {
+            put("playlist", playlistId)
+            put("msg", msg)
+            put("type", "playlist")
+            put("userIds", "[$userId]")
+        })
+
+    /** 发送私信专辑卡片（聊天通道；type=album） */
+    suspend fun msgPrivateSendAlbum(cookie: String, userId: Long, albumId: String, msg: String = ""): JsonElement =
+        eapi(cookie, "/api/msg/private/send", buildJsonObject {
+            put("id", albumId)
+            put("msg", msg)
+            put("type", "album")
+            put("userIds", "[$userId]")
+        })
+
+    /**
+     * 用户资料（公开接口，无需登录）。
+     *
+     * 私信会话列表只返回 `fromUserId / toUserId`，**不含昵称与头像**，
+     * 因此用该接口补全聊天列表的展示信息（`profile.nickname` / `profile.avatarUrl`）。
+     */
+    suspend fun userProfile(userId: Long): JsonElement {
+        val raw = Http.get(
+            url = "https://music.163.com/api/v1/user/detail/$userId",
+            headers = mapOf("User-Agent" to Http.DEFAULT_UA),
+        )
+        return parseJsonPayload(raw)
+    }
 
     /* ---------- 内部 ---------- */
 

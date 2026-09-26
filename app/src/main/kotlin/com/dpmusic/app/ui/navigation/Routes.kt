@@ -44,6 +44,16 @@ data object SettingsRoute
 
 @Serializable
 data object TogetherRoute
+/** 网易云私信会话列表（消息） */
+@Serializable
+data object ChatListRoute
+/** 与某个好友的私信会话详情 */
+@Serializable
+data class ChatThreadRoute(
+    val userId: Long,
+    val nickname: String,
+    val avatar: String = "",
+)
 
 /** 网易云「每日推荐」列表 */
 @Serializable

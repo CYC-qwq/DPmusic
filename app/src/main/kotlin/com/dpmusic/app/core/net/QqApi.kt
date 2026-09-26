@@ -147,38 +147,80 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
         return json.objOrNull("data")?.arrOrNull("list")?.mapNotNull { it.toPlaylist() } ?: emptyList()
     }
 
+    /**
+     * 歌单全量歌曲（**大歌单专项**）。
+     *
+     * 旧实现把 `song_num` 写死 500 且不翻页——超过 500 首的歌单会被静默截断。
+     * 现实现按 `song_begin`/`song_num` 翻页，直到取满、服务端不再返回新页或触及上限。
+     * 已登录时优先带 Cookie（可读「我喜欢」等私密歌单），失败或为空回退匿名。
+     */
     override suspend fun playlistSongs(playlistId: String): List<Song> {
-        // 已登录：优先带 Cookie 读取（可访问「我喜欢」与自建歌单）；失败或为空时回退匿名
         val cookie = cookieProvider().trim()
         if (cookie.isNotBlank()) {
             val viaCookie = runCatching { playlistSongsWithCookie(cookie, playlistId) }.getOrNull()
             if (!viaCookie.isNullOrEmpty()) return viaCookie
         }
-        val body = buildString {
-            append("{\"comm\":{\"ct\":24,\"cv\":0},\"req\":{\"module\":\"music.srfDissInfo.aiDissInfo\",")
-            append("\"method\":\"uniform_get_Dissinfo\",\"param\":{\"disstid\":").append(playlistId)
-            append(",\"enc_host_uin\":\"\",\"tag\":1,\"userinfo\":1,\"song_begin\":0,\"song_num\":500}}}")
-        }
-        val json = parseJsonPayload(
-            Http.postJson("https://u.y.qq.com/cgi-bin/musicu.fcg", body, referer = "https://y.qq.com/")
-        )
-        val data = json.objOrNull("req")?.objOrNull("data") ?: return emptyList()
-        return data.arrOrNull("songlist")?.mapNotNull { it.toSong() } ?: emptyList()
+        return playlistSongsAnonymous(playlistId)
     }
 
-    /** 带 Cookie 的歌单歌曲读取（musicu；「我喜欢」等私密歌单必需） */
+    /** 匿名分页拉取（逐页累加，单页失败即止损并返回已取到的部分） */
+    private suspend fun playlistSongsAnonymous(playlistId: String): List<Song> {
+        val songs = ArrayList<Song>()
+        var begin = 0
+        while (songs.size < MAX_PLAYLIST_SONGS) {
+            val body = dissInfoBody(auth = null, playlistId = playlistId, begin = begin, num = PAGE_SIZE)
+            val json = runCatching {
+                parseJsonPayload(
+                    Http.postJson("https://u.y.qq.com/cgi-bin/musicu.fcg", body, referer = "https://y.qq.com/")
+                )
+            }.getOrNull() ?: break
+            val data = json.objOrNull("req")?.objOrNull("data") ?: break
+            val page = data.arrOrNull("songlist")?.mapNotNull { it.toSong() }.orEmpty()
+            if (page.isEmpty()) break
+            songs += page
+            if (isLastPage(data, page.size, songs.size)) break
+            begin += PAGE_SIZE
+        }
+        return songs
+    }
+
+    /** 带 Cookie 的歌单歌曲读取（musicu；「我喜欢」等私密歌单必需），同样支持分页 */
     private suspend fun playlistSongsWithCookie(cookie: String, playlistId: String): List<Song> {
-        val body = buildString {
+        val songs = ArrayList<Song>()
+        var begin = 0
+        while (songs.size < MAX_PLAYLIST_SONGS) {
+            val body = dissInfoBody(auth = cookie, playlistId = playlistId, begin = begin, num = PAGE_SIZE)
+            val json = runCatching { parseJsonPayload(postMusicu(cookie, body)) }.getOrNull() ?: break
+            val data = json.objOrNull("req")?.objOrNull("data") ?: break
+            val page = data.arrOrNull("songlist")?.mapNotNull { it.toSong() }.orEmpty()
+            if (page.isEmpty()) break
+            songs += page
+            if (isLastPage(data, page.size, songs.size)) break
+            begin += PAGE_SIZE
+        }
+        return songs
+    }
+
+    /** 是否已取完最后一页（返回页不满 / 已达服务端声明的总数） */
+    private fun isLastPage(data: JsonElement, pageSize: Int, fetched: Int): Boolean {
+        if (pageSize < PAGE_SIZE) return true
+        val total = data.int("total_song_num") ?: data.int("total") ?: 0
+        return total > 0 && fetched >= total
+    }
+
+    /** 构造歌单详情请求体（`song_begin`/`song_num` 支持分页；auth 为 null 时匿名） */
+    private fun dissInfoBody(auth: String?, playlistId: String, begin: Int, num: Int): String =
+        buildString {
             append("{\"comm\":{\"ct\":24,\"cv\":0")
-            append(authFragment(cookie))
+            auth?.let { append(authFragment(it)) }
             append("},\"req\":{\"module\":\"music.srfDissInfo.aiDissInfo\",\"method\":\"uniform_get_Dissinfo\",\"param\":{\"disstid\":")
             append(playlistId)
-            append(",\"enc_host_uin\":\"\",\"tag\":1,\"userinfo\":1,\"song_begin\":0,\"song_num\":500}}}")
+            append(",\"enc_host_uin\":\"\",\"tag\":1,\"userinfo\":1,\"song_begin\":")
+            append(begin)
+            append(",\"song_num\":")
+            append(num)
+            append("}}}")
         }
-        val json = parseJsonPayload(postMusicu(cookie, body))
-        val data = json.objOrNull("req")?.objOrNull("data") ?: return emptyList()
-        return data.arrOrNull("songlist")?.mapNotNull { it.toSong() } ?: emptyList()
-    }
 
     override suspend fun playlistMeta(playlistId: String): PlaylistSummary? {
         val raw = Http.get(
@@ -320,9 +362,21 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
 
     /* ---------- 账号能力（Cookie 直连：设置页登录 / 红心同步） ---------- */
 
+    /**
+     * uin 取值。
+     *
+     * 网页登录拿到的 `uin` 可能是 `o1234567` 形式（跨域 cookie 的 o 前缀），
+     * 而 QQ 音乐接口只认纯数字，这里统一清洗。
+     */
+    private fun uinOf(cookie: String): String? {
+        val raw = cookieValue(cookie, "uin") ?: cookieValue(cookie, "luin") ?: return null
+        val cleaned = raw.trim().removePrefix("o").removePrefix("O")
+        return cleaned.takeIf { it.isNotBlank() && it.all { c -> c.isDigit() } }
+    }
+
     /** 登录校验：Cookie 含 uin + qqmusic_key（qm_keyst）且资料接口可用时返回资料 */
     suspend fun loginStatus(cookie: String): QqProfile? {
-        val uin = cookieValue(cookie, "uin") ?: return null
+        val uin = uinOf(cookie) ?: return null
         cookieValue(cookie, "qqmusic_key") ?: cookieValue(cookie, "qm_keyst") ?: return null
         val raw = Http.get(
             "https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?cid=205360838&reqfrom=1&userid=${urlEnc(uin)}",
@@ -336,7 +390,7 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
 
     /** 我的歌单（含「我喜欢」dirId=201；需登录 Cookie） */
     suspend fun userPlaylists(cookie: String): List<QqPlaylist> {
-        val uin = cookieValue(cookie, "uin") ?: return emptyList()
+        val uin = uinOf(cookie) ?: return emptyList()
         val body = buildString {
             append("{\"comm\":{\"ct\":24,\"cv\":0")
             append(authFragment(cookie))
@@ -479,7 +533,7 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
 
     /** 登录态 comm 片段（authst + uin） */
     private fun authFragment(cookie: String): String {
-        val uin = cookieValue(cookie, "uin").orEmpty()
+        val uin = uinOf(cookie).orEmpty()
         val key = cookieValue(cookie, "qqmusic_key") ?: cookieValue(cookie, "qm_keyst").orEmpty()
         val sb = StringBuilder()
         if (key.isNotBlank()) sb.append(",\"authst\":\"").append(key).append('"')
@@ -554,6 +608,14 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
     /** QQ 专辑封面 CDN（实测可用） */
     private fun qqCover(albumMid: String?): String =
         if (albumMid.isNullOrBlank()) "" else "https://y.qq.com/music/photo_new/T002R500x500M000$albumMid.jpg"
+
+    companion object {
+        /** 歌单分页每页条数（musicu 单次返回上限的稳定取值） */
+        private const val PAGE_SIZE = 500
+
+        /** 单歌单歌曲上限（防御异常歌单 / 服务端忽略 song_begin 导致的死循环） */
+        private const val MAX_PLAYLIST_SONGS = 10_000
+    }
 }
 
 /** 「我喜欢」同步数据：权威 mid 集合 + 可播放的歌曲详情 */

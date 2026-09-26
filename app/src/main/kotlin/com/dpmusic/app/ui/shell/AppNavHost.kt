@@ -40,7 +40,12 @@ import com.dpmusic.app.ui.navigation.SearchRoute
 import com.dpmusic.app.ui.navigation.SettingsRoute
 import com.dpmusic.app.ui.navigation.SourceManagerRoute
 import com.dpmusic.app.ui.navigation.SyncRoute
+import com.dpmusic.app.AppContainer
+import com.dpmusic.app.ui.navigation.ChatListRoute
+import com.dpmusic.app.ui.navigation.ChatThreadRoute
 import com.dpmusic.app.ui.navigation.TogetherRoute
+import com.dpmusic.app.ui.screens.chat.ChatListScreen
+import com.dpmusic.app.ui.screens.chat.ChatThreadScreen
 import com.dpmusic.app.ui.navigation.UserPlaylistDetailRoute
 import com.dpmusic.app.ui.screens.home.HomeScreen
 import com.dpmusic.app.ui.screens.mine.MineScreen
@@ -231,12 +236,14 @@ fun AppNavHost(
                 windowSizeClass = windowSizeClass,
                 onOpenSettings = { navController.navigate(SettingsRoute) },
                 onOpenTogether = { navController.navigate(TogetherRoute) },
+                onOpenChat = { navController.navigate(ChatListRoute) },
             )
         }
 
         composable<SettingsRoute> {
             SettingsScreen(
                 windowSizeClass = windowSizeClass,
+                onBack = { navController.popBackStack() },
                 onOpenLogs = { navController.navigate(LogsRoute) },
                 onOpenSources = { navController.navigate(SourceManagerRoute) },
                 onOpenDownloadManager = { navController.navigate(DownloadManagerRoute) },
@@ -263,6 +270,35 @@ fun AppNavHost(
                 windowSizeClass = windowSizeClass,
                 onBack = { navController.popBackStack() },
                 onOpenSettings = { navController.navigate(SettingsRoute) },
+            )
+        }
+
+        composable<ChatListRoute> {
+            ChatListScreen(
+                windowSizeClass = windowSizeClass,
+                onBack = { navController.popBackStack() },
+                onOpenThread = { conv ->
+                    navController.navigate(
+                        ChatThreadRoute(
+                            userId = conv.userId,
+                            nickname = conv.nickname,
+                            avatar = conv.avatarUrl,
+                        ),
+                    )
+                },
+                onOpenLogin = { navController.navigate(SettingsRoute) },
+            )
+        }
+
+        composable<ChatThreadRoute> { entry ->
+            val route = entry.toRoute<ChatThreadRoute>()
+            ChatThreadScreen(
+                userId = route.userId,
+                title = route.nickname,
+                avatarUrl = route.avatar,
+                windowSizeClass = windowSizeClass,
+                onBack = { navController.popBackStack() },
+                onOpenPlayer = { AppContainer.player.openPlayerSheet() },
             )
         }
         composable<DailySongsRoute> {
@@ -336,11 +372,5 @@ fun AppNavHost(
 /** 该返回栈条目是否为主页面（destination.route 为路由类的全限定名） */
 private fun NavBackStackEntry.isMainTabRoute(): Boolean = destination.route in mainTabRouteNames
 
-/** 主导航跳转：单顶 + 状态保存 / 恢复（主页面间切换的标准行为） */
-private fun NavHostController.navigateToMain(route: Any) {
-    navigate(route) {
-        popUpTo(graph.findStartDestination().id) { saveState = true }
-        launchSingleTop = true
-        restoreState = true
-    }
-}
+/* navigateToMain 统一实现在 DPmusicShell.kt（internal）—— 避免两处定义行为不一致：
+ * 之前这里与 DPmusicShell 各有一份，改了一处漏一处，导致「切 Tab 后子页面残留」。 */

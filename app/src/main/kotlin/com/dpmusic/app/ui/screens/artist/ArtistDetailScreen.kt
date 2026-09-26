@@ -52,8 +52,10 @@ import com.dpmusic.app.ui.components.EmptyState
 import com.dpmusic.app.ui.components.ErrorState
 import com.dpmusic.app.ui.components.InlineLoading
 import com.dpmusic.app.ui.components.LoadingState
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.navigation.ArtistDetailRoute
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 歌手详情页（网易云源）：
@@ -109,18 +111,18 @@ fun ArtistDetailScreen(
                     onRetry = vm::retry,
                 )
 
-                artist == null && songs.isEmpty() -> LoadingState(text = "正在获取歌手信息…")
+                artist == null && songs.isEmpty() -> SongListSkeleton(count = 6)
 
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     item(key = "header") { ArtistHeader(artist) }
                     item(key = "tabs") { ArtistTabs(tab = tab, onTabChange = vm::switchTab) }
                     if (tab == ArtistTab.Songs) {
                         item(key = "sorts") { ArtistSorts(sort = sort, onSortChange = vm::switchSort) }
                         if (songs.isEmpty() && songsLoading) {
-                            item(key = "songs_loading") { LoadingState(text = "正在获取歌曲…") }
+                            item(key = "songs_loading") { SongListSkeleton(count = 6) }
                         } else if (songs.isEmpty()) {
                             item(key = "songs_empty") { EmptyState(title = "暂无歌曲", subtitle = "换个排序或稍后再试") }
                         } else {
@@ -143,7 +145,7 @@ fun ArtistDetailScreen(
                         }
                     } else {
                         if (albums.isEmpty() && albumsLoading) {
-                            item(key = "albums_loading") { LoadingState(text = "正在获取专辑…") }
+                            item(key = "albums_loading") { SongListSkeleton(count = 6) }
                         } else if (albums.isEmpty()) {
                             item(key = "albums_empty") { EmptyState(title = "暂无专辑", subtitle = "稍后再试") }
                         } else {

@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.dpmusic.app.ui.theme.glassPanelColor
 
 /**
  * 歌曲多选状态（以 stableKey 为标识）：
@@ -98,7 +99,7 @@ fun SelectionActionBar(
         val allSelected = allKeys.isNotEmpty() && state.count >= allKeys.size
         Surface(
             shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
             shadowElevation = 6.dp,
         ) {
             Row(
@@ -133,7 +134,7 @@ fun SelectionActionBar(
                     enabled = state.count > 0,
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.PlaylistAdd,
+                        imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
                     )

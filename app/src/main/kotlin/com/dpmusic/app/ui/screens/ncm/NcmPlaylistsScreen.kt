@@ -38,7 +38,8 @@ import com.dpmusic.app.ui.components.CoverArt
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.EmptyState
 import com.dpmusic.app.ui.components.ErrorState
-import com.dpmusic.app.ui.components.LoadingState
+import com.dpmusic.app.ui.components.SongListSkeleton
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 我的歌单（网易云账号创建 + 收藏，需登录）：
@@ -80,7 +81,7 @@ fun NcmPlaylistsScreen(
                 .padding(padding),
         ) {
             when {
-                loading && playlists.isEmpty() -> LoadingState(text = "正在获取歌单…")
+                loading && playlists.isEmpty() -> SongListSkeleton(count = 7)
                 error != null && playlists.isEmpty() -> ErrorState(
                     message = error ?: "加载失败",
                     onRetry = vm::load,
@@ -91,7 +92,7 @@ fun NcmPlaylistsScreen(
                 )
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 8.dp),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = LocalBottomBarInset.current),
                 ) {
                     items(playlists, key = { it.id }) { pl ->
                         NcmPlaylistRow(playlist = pl, onClick = { onOpenPlaylist(pl.id, pl.name) })

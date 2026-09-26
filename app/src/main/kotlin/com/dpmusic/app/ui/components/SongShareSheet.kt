@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Link
@@ -57,7 +58,8 @@ private enum class ShareOption(
  * 分享歌曲面板（播放页 → 分享）：
  * - 三种组合可选：仅官方链接 / 仅音源直链 / 两者都带；
  * - 音源直链按当前播放音质实时解析，失败时给出提示；
- * - 选择后调起系统分享面板。
+ * - 选择后调起系统分享面板；
+ * - 另有「分享给网易云好友」：以歌曲卡片发到网易云私信（与官方分享互通）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,6 +67,8 @@ fun SongShareSheet(
     song: Song,
     quality: PlayQuality,
     onDismiss: () -> Unit,
+    /** 选择「分享给网易云好友」；由调用方关闭本面板并弹出好友选择器 */
+    onShareToNcm: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -158,6 +162,45 @@ fun SongShareSheet(
                 }
             }
 
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+            )
+
+            Text(
+                text = "分享到网易云",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 24.dp, top = 12.dp, bottom = 4.dp),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = resolving == null) {
+                        onDismiss()
+                        onShareToNcm()
+                    }
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ChatBubbleOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "分享给网易云好友", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = "以歌曲卡片发送到网易云私信",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             errorMessage?.let {
                 Text(
                     text = "• $it",
@@ -168,7 +211,7 @@ fun SongShareSheet(
             }
 
             Text(
-                text = "选择后将打开系统分享面板",
+                text = "前三项将打开系统分享面板；最后一项发送到网易云私信",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 10.dp),

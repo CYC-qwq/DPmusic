@@ -33,9 +33,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.EmptyState
 import com.dpmusic.app.ui.components.ErrorState
-import com.dpmusic.app.ui.components.LoadingState
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.navigation.QqRecommendRoute
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * QQ 音乐推荐列表（source：radio=猜你喜欢 / radar=雷达）：
@@ -83,7 +84,7 @@ fun QqRecommendScreen(
                 .padding(padding),
         ) {
             when {
-                loading && songs.isEmpty() -> LoadingState(text = "正在获取推荐…")
+                loading && songs.isEmpty() -> SongListSkeleton(count = 8)
                 error != null && songs.isEmpty() -> ErrorState(
                     message = error ?: "加载失败",
                     onRetry = { vm.retry(route.source) },
@@ -94,7 +95,7 @@ fun QqRecommendScreen(
                 )
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     item(key = "header") {
                         QqRecommendHeader(source = route.source, count = songs.size, onPlayAll = vm::playAll)

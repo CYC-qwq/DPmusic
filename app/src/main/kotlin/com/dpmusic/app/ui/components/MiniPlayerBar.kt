@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dpmusic.app.core.playback.NowPlaying
 import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.util.rememberDpHaptics
 
 /**
  * 底部迷你播放条（悬浮胶囊卡片）：
@@ -48,13 +49,14 @@ fun MiniPlayerBar(
 ) {
     val np = nowPlaying ?: return
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberDpHaptics()
 
     GlassSurface(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
         shadowElevation = 6.dp,
     ) {
         Column {
@@ -65,7 +67,7 @@ fun MiniPlayerBar(
                         .fillMaxWidth()
                         .height(3.dp),
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     gapSize = 0.dp,
                     drawStopIndicator = {},
                 )
@@ -106,14 +108,14 @@ fun MiniPlayerBar(
                     )
                 }
 
-                IconButton(onClick = onTogglePlay) {
+                IconButton(onClick = { haptics.click(); onTogglePlay() }) {
                     Icon(
                         imageVector = if (np.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = if (np.isPlaying) "暂停" else "播放",
                         modifier = Modifier.size(28.dp),
                     )
                 }
-                IconButton(onClick = onNext) {
+                IconButton(onClick = { haptics.click(); onNext() }) {
                     Icon(Icons.Filled.SkipNext, contentDescription = "下一首")
                 }
             }

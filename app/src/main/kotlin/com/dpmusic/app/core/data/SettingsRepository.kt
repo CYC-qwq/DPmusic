@@ -19,12 +19,25 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
+/**
+ * 内置 LX 音源 Key 默认值。
+ *
+ * 已按交付要求**清空**：不内置任何 Key，由用户在「设置 → 音源 Key」中自行填写
+ * （留空则无法解析在线播放地址）。
+ */
+private const val DefaultLxApiKey = ""
+
 /** 应用设置快照 */
 data class AppSettings(
     val defaultPlatform: MusicPlatform = MusicPlatform.WY,
     val quality: PlayQuality = PlayQuality.HIGH,
-    /** LX 音源服务 Key（空 = 未配置，无法解析在线播放地址） */
-    val lxApiKey: String = "",
+    /**
+     * LX 音源服务 Key。
+     *
+     * ⚠️ 当前内置的是**测试用 Key**（仅为联调/体验方便）：
+     * 正式发布前请改为空字符串，或让用户自行在「设置 → 音源 Key」中配置。
+     */
+    val lxApiKey: String = DefaultLxApiKey,
     /** 图片缓存最大占用（MB；0 = 不限制） */
     val maxStorageMb: Int = 1024,
     /** 音乐下载目录（空 = 默认公共音乐目录 DPmusic） */
@@ -50,10 +63,10 @@ data class AppSettings(
     val lastClipboardHandled: String = "",
     /** 主题色板 id（见 ThemePalettes.kt；default = 品牌回退配色） */
     val themeColor: String = "default",
-    /** 毛玻璃外观模式（半透明磨砂面板 + 全局流光底；Android 12+ 支持真实模糊） */
+    /** 玻璃风格模式（半透明磨砂面板 + 全局流光底；Android 12+ 支持真实模糊） */
     val glassMode: Boolean = false,
-    /** 音源解析优先级（自定义脚本 vs 远端代理 Key） */
-    val sourcePriority: SourcePriority = SourcePriority.SCRIPT_FIRST,
+    /** 音源解析优先级（自定义脚本 vs 远端代理 Key）；默认 Key 优先 */
+    val sourcePriority: SourcePriority = SourcePriority.KEY_FIRST,
     /** 播放速度倍率（0.5 - 2.0；变速不变调） */
     val playbackSpeed: Float = 1f,
     /** 定时退出：勾选「播完当前歌曲后停止」偏好（下次打开面板保持） */
@@ -143,7 +156,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
             AppSettings(
                 defaultPlatform = MusicPlatform.fromId(prefs[KEY_PLATFORM]),
                 quality = PlayQuality.fromId(prefs[KEY_QUALITY]),
-                lxApiKey = prefs[KEY_LX_API_KEY].orEmpty(),
+                lxApiKey = prefs[KEY_LX_API_KEY] ?: DefaultLxApiKey,
                 maxStorageMb = prefs[KEY_MAX_STORAGE_MB] ?: 1024,
                 downloadDir = prefs[KEY_DOWNLOAD_DIR].orEmpty(),
                 lyricScalePortrait = prefs[KEY_LYRIC_SCALE_PORTRAIT] ?: 1f,

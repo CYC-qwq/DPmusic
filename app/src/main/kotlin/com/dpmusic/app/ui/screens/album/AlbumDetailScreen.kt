@@ -37,12 +37,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpmusic.app.core.model.AlbumDetail
 import com.dpmusic.app.core.model.formatPublishYear
 import com.dpmusic.app.ui.components.CoverArt
+import com.dpmusic.app.ui.components.SongListSkeleton
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.EmptyState
 import com.dpmusic.app.ui.components.ErrorState
 import com.dpmusic.app.ui.components.LoadingState
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.navigation.AlbumDetailRoute
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 专辑详情页（网易云源）：
@@ -85,12 +87,12 @@ fun AlbumDetailScreen(
         ) {
             val detail = album
             when {
-                loading && detail == null -> LoadingState(text = "正在获取专辑…")
+                loading && detail == null -> SongListSkeleton(count = 6)
                 error != null && detail == null -> ErrorState(message = error ?: "加载失败", onRetry = vm::retry)
                 detail == null -> EmptyState(title = "专辑不存在", subtitle = "请返回重试")
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     item(key = "header") { AlbumHeader(detail) }
                     itemsIndexed(detail.songs, key = { _, s -> s.stableKey }) { index, song ->

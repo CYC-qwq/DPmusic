@@ -55,6 +55,7 @@ import com.dpmusic.app.ui.components.PlatformBadge
 import com.dpmusic.app.ui.components.SongRow
 import com.dpmusic.app.ui.components.staggeredEntrance
 import com.dpmusic.app.ui.util.sidePaneWidth
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 
 @Composable
@@ -101,7 +102,7 @@ internal fun RecentContent(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
             ) {
                 item(key = "listening_stats") {
                     ListeningStatsCard(
@@ -131,10 +132,13 @@ internal fun RecentContent(
                             isLast = position == items.lastIndex,
                             onClick = { vm.playAt(indexed.index) },
                             onLongClick = { onSongLongClick(indexed.value.song) },
-                            modifier = Modifier.staggeredEntrance(
-                                index = position,
-                                enabled = position < 12,
-                            ),
+                            modifier = Modifier
+                                .staggeredEntrance(
+                                    index = position,
+                                    enabled = position < 12,
+                                )
+                                // 清空 / 移除记录时：该项淡出、其余项平滑补位
+                                .animateItem(fadeInSpec = null),
                         )
                     }
                 }

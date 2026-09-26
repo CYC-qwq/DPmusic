@@ -53,6 +53,8 @@ import com.dpmusic.app.ui.components.DpTopAppBar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 数据同步页（WebDAV）：
@@ -91,7 +93,10 @@ fun SyncScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp, top = 16.dp, end = 16.dp,
+                bottom = 16.dp + LocalBottomBarInset.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item {
@@ -355,7 +360,7 @@ private fun SyncCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        colors = CardDefaults.cardColors(containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh)),
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

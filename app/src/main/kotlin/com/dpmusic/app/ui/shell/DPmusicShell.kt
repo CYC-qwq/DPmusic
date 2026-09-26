@@ -50,6 +50,7 @@ import androidx.compose.material3.windowsizeclass.WindowHeightSizeClass
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -60,8 +61,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.LookaheadScope
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -86,6 +100,9 @@ import com.dpmusic.app.ui.components.AddToPlaylistHost
 import com.dpmusic.app.ui.components.ClipboardLinkDialog
 import com.dpmusic.app.ui.components.DownloadBall
 import com.dpmusic.app.ui.components.GlassBackdrop
+import com.dpmusic.app.ui.components.GlassSurface
+import com.dpmusic.app.ui.components.LocalGlassBlur
+import com.dpmusic.app.ui.components.LocalGlassSampleOffset
 import com.dpmusic.app.ui.components.MiniPlayerBar
 import com.dpmusic.app.ui.components.PlayerSheetHost
 import com.dpmusic.app.ui.components.QueueSheet
@@ -98,10 +115,11 @@ import com.dpmusic.app.ui.navigation.PlaylistRoute
 import com.dpmusic.app.ui.navigation.SearchRoute
 import com.dpmusic.app.ui.navigation.TogetherRoute
 import com.dpmusic.app.ui.player.PlayerViewModel
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
+import com.dpmusic.app.ui.theme.LocalGlass
 import com.dpmusic.app.ui.theme.glassPanelColor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-
 /* 弹簧参数：M3 Expressive 规格（弹性与克制兼备）；配合消费端过冲夹紧 */
 
 private val SheetOpenSpring = spring<Float>(
@@ -146,6 +164,10 @@ fun DPmusicShell(
     val lyricsState by playerVm.lyrics.collectAsStateWithLifecycle()
     val palette by playerVm.palette.collectAsStateWithLifecycle()
     val favoriteKeys by playerVm.favoriteKeys.collectAsStateWithLifecycle()
+    // Liquid Glass 需要「有细节可透」：空闲态（未播放）用最近播放的封面兜底，
+    // 否则背景只剩一层平滑渐变色，玻璃面板看起来就是纯色卡片。
+    val recentPlays by AppContainer.history.recent.collectAsStateWithLifecycle()
+    val backdropCover = nowPlaying?.song?.coverUrl ?: recentPlays.firstOrNull()?.song?.coverUrl
 
     val snackbarHostState = remember { SnackbarHostState() }
     val addHost = rememberAddToPlaylistHost()
@@ -235,9 +257,19 @@ fun DPmusicShell(
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-                /* 毛玻璃外观：全局流光底（经典模式自动跳过；封面模糊层仅 Android 12+ 绘制） */
+                /* Liquid Glass 内容层：记录「背景 + 页面内容」，供覆盖在内容之上的玻璃面板（Mini 条 / 底栏）采样 */
+                val bgLayer = LocalGlassBlur.current
+                val contentLayer = rememberGraphicsLayer()
+                val layoutDirection = LocalLayoutDirection.current
+                val density = LocalDensity.current
+                val contentLayerSize = IntSize(constraints.maxWidth, constraints.maxHeight)
+                var contentOrigin by remember { mutableStateOf(Offset.Zero) }
+                var miniBarHeight by remember { mutableStateOf(0.dp) }
+                var navBarHeight by remember { mutableStateOf(0.dp) }
+
+                /* 玻璃风格：全局流光底（经典模式自动跳过；封面模糊层仅 Android 12+ 绘制） */
                 GlassBackdrop(
-                    coverUrl = nowPlaying?.song?.coverUrl,
+                    coverUrl = backdropCover,
                     isPlaying = nowPlaying?.isPlaying == true,
                     glowColors = palette,
                     modifier = Modifier.fillMaxSize(),
@@ -281,6 +313,9 @@ fun DPmusicShell(
                     }
                 }
 
+                // 底部栏总高度：页面列表据此做底部留白，使内容能滚到玻璃栏下面（玻璃才「透」得出内容）
+                val bottomBarInset = if (isCompact) miniBarHeight + navBarHeight else miniBarHeight
+
                 Row(modifier = Modifier.fillMaxSize()) {
                     /* ---------- 侧边导航：非紧凑态横向平滑展开（旋转 / 折叠形变） ---------- */
                     AnimatedVisibility(
@@ -311,25 +346,31 @@ fun DPmusicShell(
                         snackbarHost = { SnackbarHost(snackbarHostState) },
                         bottomBar = {
                             Column(modifier = Modifier.animateContentSize()) {
-                                Box(
-                                    modifier = Modifier.graphicsLayer {
-                                        // 夹紧过冲，保证 alpha / scale 始终处于合法区间
-                                        val p = sheetProgress.value.coerceIn(0f, 1f)
-                                        scaleX = 1f - 0.04f * p
-                                        scaleY = 1f - 0.04f * p
-                                        alpha = 1f - p
-                                    },
+                                CompositionLocalProvider(
+                                    LocalGlassBlur provides contentLayer,
                                 ) {
-                                    MiniPlayerHost(
-                                        nowPlaying = nowPlaying,
-                                        onTogglePlay = { player.togglePlayPause() },
-                                        onNext = { player.next() },
-                                        onExpand = expandSheet,
-                                        onDragDelta = onMiniDragDelta,
-                                        onDragStop = onMiniDragStop,
-                                        coverModifier = miniCoverModifier,
-                                        modifier = if (isCompact) Modifier else Modifier.navigationBarsPadding(),
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .onSizeChanged { miniBarHeight = with(density) { it.height.toDp() } }
+                                            .graphicsLayer {
+                                                // 夹紧过冲，保证 alpha / scale 始终处于合法区间
+                                                val p = sheetProgress.value.coerceIn(0f, 1f)
+                                                scaleX = 1f - 0.04f * p
+                                                scaleY = 1f - 0.04f * p
+                                                alpha = 1f - p
+                                            },
+                                    ) {
+                                        MiniPlayerHost(
+                                            nowPlaying = nowPlaying,
+                                            onTogglePlay = { player.togglePlayPause() },
+                                            onNext = { player.next() },
+                                            onExpand = expandSheet,
+                                            onDragDelta = onMiniDragDelta,
+                                            onDragStop = onMiniDragStop,
+                                            coverModifier = miniCoverModifier,
+                                            modifier = if (isCompact) Modifier else Modifier.navigationBarsPadding(),
+                                        )
+                                    }
                                 }
                                 /* ---------- 底部导航：紧凑态纵向展开，其余形态收起 ---------- */
                                 AnimatedVisibility(
@@ -337,23 +378,53 @@ fun DPmusicShell(
                                     enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
                                     exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
                                 ) {
-                                    MainNavigationBar(navController = navController)
+                                    CompositionLocalProvider(
+                                        LocalGlassBlur provides contentLayer,
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .onSizeChanged { navBarHeight = with(density) { it.height.toDp() } },
+                                        ) {
+                                            MainNavigationBar(navController = navController)
+                                        }
+                                    }
                                 }
                             }
                         },
                     ) { padding ->
-                        AppNavHost(
-                            navController = navController,
-                            windowSizeClass = windowSizeClass,
+                        // 内容区：录制「背景 + 页面内容」到内容层（root 坐标对齐），供底部玻璃面板采样。
+                        // 注意：这里**不**再对内容做底部内边距 —— 内容要能滚到玻璃栏下面（由各页面列表的
+                        // contentPadding.bottom = LocalBottomBarInset 承担留白），玻璃才有内容可透。
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(padding)
-                                .consumeWindowInsets(padding),
-                        )
+                                .consumeWindowInsets(padding)
+                                .onGloballyPositioned { contentOrigin = it.positionInRoot() }
+                                .drawWithContent {
+                                    contentLayer.record(this, layoutDirection, contentLayerSize) {
+                                        translate(-contentOrigin.x, -contentOrigin.y) {
+                                            bgLayer?.let { drawLayer(it) }
+                                            this@drawWithContent.drawContent()
+                                        }
+                                    }
+                                    drawLayer(contentLayer)
+                                },
+                        ) {
+                            CompositionLocalProvider(LocalBottomBarInset provides bottomBarInset) {
+                                AppNavHost(
+                                    navController = navController,
+                                    windowSizeClass = windowSizeClass,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                        }
                     }
                 }
 
                 /* ---------- 全屏播放器（最上层覆盖，Mini ⇄ 全屏同一实体） ---------- */
+                // 覆盖层（播放页 / 抽屉）在内容之上：把玻璃采样源指向「内容层」，
+                // 这样它们透出的是真实页面内容（而非只有装饰性流光底）
+                CompositionLocalProvider(LocalGlassBlur provides contentLayer) {
                 PlayerSheetHost(
                     progress = sheetProgress,
                     nowPlaying = nowPlaying,
@@ -425,6 +496,7 @@ fun DPmusicShell(
                 )
 
                 AddToPlaylistHost(addHost, snackbarHostState)
+                }
 
                 /* ---------- 剪切板链接识别弹窗 ---------- */
                 val clipEvent by ClipboardLinkInbox.event.collectAsStateWithLifecycle()
@@ -510,22 +582,42 @@ fun DPmusicShell(
 
 /* ---------------- 自适应导航 ---------------- */
 
-/** 底部导航（Compact）：选中态由当前返回栈目的地推导 */
+/** 底部导航（Compact）：选中态由当前返回栈目的地推导；容器为真实玻璃面板（模糊 + 边缘折射 + 边缘高光） */
 @Composable
 private fun MainNavigationBar(navController: NavHostController) {
     val currentDestination = navController.currentBackStackEntryAsState().value?.destination
+    val glass = LocalGlass.current
 
-    NavigationBar(
-        containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
-    ) {
-        mainNavItems.forEach { item ->
-            NavigationBarItem(
-                selected = currentDestination.isOnRoute(item.route),
-                onClick = { navController.navigateToMain(item.route) },
-                icon = { Icon(item.icon, contentDescription = item.label) },
-                label = { Text(item.label) },
-            )
+    if (glass.enabled) {
+        // 玻璃模式：导航栏本体透明，由 GlassSurface 提供玻璃底（含模糊 / 折射 / 边缘高光）
+        GlassSurface(
+            shape = RectangleShape,
+            color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
+        ) {
+            NavigationBar(containerColor = Color.Transparent) {
+                MainNavigationItems(navController, currentDestination)
+            }
         }
+    } else {
+        NavigationBar(containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer)) {
+            MainNavigationItems(navController, currentDestination)
+        }
+    }
+}
+
+/** 底部导航项（两种容器共用） */
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.MainNavigationItems(
+    navController: NavHostController,
+    currentDestination: NavDestination?,
+) {
+    mainNavItems.forEach { item ->
+        NavigationBarItem(
+            selected = currentDestination.isOnRoute(item.route),
+            onClick = { navController.navigateToMain(item.route) },
+            icon = { Icon(item.icon, contentDescription = item.label) },
+            label = { Text(item.label) },
+        )
     }
 }
 
@@ -580,12 +672,22 @@ private fun NavDestination?.isOnRoute(route: Any): Boolean {
     } == true
 }
 
-/** 主导航跳转：单顶 + 状态保存 / 恢复（标准底部导航行为） */
-private fun NavHostController.navigateToMain(route: Any) {
+/**
+ * 主导航跳转（底部导航 / 侧边导航共用）：
+ * - `launchSingleTop`：同一个 Tab 不重复入栈；
+ * - `popUpTo(start)` **不保存状态**：切 Tab 时把上一个 Tab 的「子页面」
+ *   （设置 / 日志 / 音源管理 / 同步 / 下载管理 / 各种详情页）全部弹出，
+ *   切回来就是该 Tab 的根页面。
+ *
+ * 注意：之前用 `saveState = true` + `restoreState = true`（官方多 Tab 示例写法）会
+ * **连同子页面一起恢复**，于是「主页 → 打开设置 → 切到搜索 → 切回主页」时显示的
+ * 还是设置页，操作上很别扭。Tab 页面自身的状态（滚动位置等）由仍在栈中的根
+ * destination 保留，不受影响。
+ */
+internal fun NavHostController.navigateToMain(route: Any) {
     navigate(route) {
-        popUpTo(graph.findStartDestination().id) { saveState = true }
+        popUpTo(graph.findStartDestination().id) { inclusive = false }
         launchSingleTop = true
-        restoreState = true
     }
 }
 

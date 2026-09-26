@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.dpmusic.app.core.model.Song
+import com.dpmusic.app.ui.theme.glassPanelColor
 
 /** 判断单曲是否命中关键词（歌名 / 歌手 / 专辑，忽略大小写；空关键词恒命中） */
 fun songMatches(song: Song, query: String): Boolean {
@@ -55,7 +56,7 @@ fun ListFilterBar(
             .fillMaxWidth()
             .height(42.dp),
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         Row(
             modifier = Modifier.padding(start = 12.dp, end = 4.dp),

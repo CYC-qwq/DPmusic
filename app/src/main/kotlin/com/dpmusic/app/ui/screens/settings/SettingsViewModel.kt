@@ -1,6 +1,7 @@
 package com.dpmusic.app.ui.screens.settings
 
 import android.content.Context
+import android.webkit.CookieManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil3.SingletonImageLoader
@@ -54,26 +55,37 @@ class SettingsViewModel(
         refreshStorageUsage()
     }
 
-    /** 刷新存储占用（IO 线程统计） */
+    /** 刷新存储占用（IO 线程统计）；统计前先做一次「超限自动清理」，保证展示值就是清理后的真实占用 */
     fun refreshStorageUsage() {
         viewModelScope.launch {
-            val usage = withContext(Dispatchers.IO) { StorageManager.usage(context) }
+            val usage = withContext(Dispatchers.IO) {
+                StorageManager.autoCleanIfNeeded(context)
+                StorageManager.usage(context)
+            }
             _storageUsage.value = usage
         }
     }
 
-    /** 设置图片缓存上限：持久化 + 立即重建缓存（按 LRU 收缩到新上限内） */
+    /** 设置图片缓存上限：持久化 + 立即重建缓存（按 LRU 收缩到新上限内）+ 立即做一次超限自动清理 */
     fun setMaxStorageMb(mb: Int) {
         viewModelScope.launch {
             settingsRepo.setMaxStorageMb(mb)
-            withContext(Dispatchers.IO) { StorageManager.applyImageCap(context, mb) }
+            val cleaned = withContext(Dispatchers.IO) {
+                StorageManager.applyImageCap(context, mb)
+                StorageManager.autoCleanIfNeeded(context)
+            }
             delay(300)
             refreshStorageUsage()
-            _cacheMessage.value = "已应用新的存储上限：${StorageManager.capLabel(mb)}"
+            _cacheMessage.value = when {
+                cleaned != null && cleaned.freedBytes > 0 ->
+                    "上限已设为 ${StorageManager.capLabel(mb)}，已自动清理并释放 " +
+                        StorageManager.formatBytes(cleaned.freedBytes)
+                else -> "上限已设为 ${StorageManager.capLabel(mb)}，超出后会自动清理"
+            }
         }
     }
 
-    /** 智能清理：临时文件优先 → 图片缓存按最久未用收缩到上限内 */
+    /** 手动立即清理（自动清理之外的兜底入口）：临时文件优先 → 图片缓存按最久未用收缩到上限内 */
     fun smartClean() {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { StorageManager.smartClean(context) }
@@ -81,7 +93,7 @@ class SettingsViewModel(
             val freed = StorageManager.formatBytes(result.freedBytes)
             _cacheMessage.value = when {
                 result.actions.isEmpty() -> "存储占用正常，无需清理"
-                result.freedBytes > 0 -> "智能清理完成：释放 $freed（${result.actions.joinToString("、")}）"
+                result.freedBytes > 0 -> "清理完成：释放 $freed（${result.actions.joinToString("、")}）"
                 else -> "已执行：${result.actions.joinToString("、")}"
             }
         }
@@ -227,7 +239,7 @@ class SettingsViewModel(
 
     val ncmProfile = ncm.profile
 
-    /** 红心同步状态（自动双向同步） */
+    /** 红心同步状态（单向：云端 → 本地） */
     val ncmSyncState = AppContainer.ncmSync.state
 
     private val _ncmLogin = MutableStateFlow(NcmLoginUi())
@@ -255,7 +267,7 @@ class SettingsViewModel(
 
                 else -> {
                     ncm.saveCookie(cookie, profile)
-                    // 登录成功 → 立即触发一次红心同步（自动双向）
+                    // 登录成功 → 立即拉取一次云端红心（单向）
                     AppContainer.ncmSync.syncNow()
                     _ncmLogin.update { it.copy(busy = false, success = true, message = "登录成功：${profile.nickname}") }
                 }
@@ -267,7 +279,23 @@ class SettingsViewModel(
     fun clearNcmCookie() {
         viewModelScope.launch {
             ncm.clearCookie()
+            // 同时清空 WebView 的 Cookie 容器：否则「快速登录」会立刻用旧票据登回上一个账号
+            clearWebLoginCookies()
             _ncmLogin.value = NcmLoginUi(message = "已退出网易云登录")
+        }
+    }
+
+    /**
+     * 清空 WebView 的 Cookie 容器。
+     *
+     * 网页登录的票据存在系统 WebView 的 Cookie 库里（与应用的 DataStore 相互独立），
+     * 退出登录时必须一并清掉，否则用户换账号时会「秒登回旧号」。
+     */
+    private fun clearWebLoginCookies() {
+        runCatching {
+            val manager = CookieManager.getInstance()
+            manager.removeAllCookies(null)
+            manager.flush()
         }
     }
 

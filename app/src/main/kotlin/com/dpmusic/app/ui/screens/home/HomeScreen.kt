@@ -28,7 +28,7 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.QueueMusic
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Settings
@@ -74,6 +74,8 @@ import com.dpmusic.app.ui.components.pressScale
 import com.dpmusic.app.ui.theme.NcmBrandColor
 import com.dpmusic.app.ui.theme.QqBrandColor
 import java.util.Calendar
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 主页：
@@ -175,12 +177,7 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                end = 16.dp,
-                top = if (compactHeight) 8.dp else 16.dp,
-                bottom = 24.dp,
-            ),
+            contentPadding = PaddingValues(start = 16.dp, top = if (compactHeight) 8.dp else 16.dp, end = 16.dp, bottom = 24.dp + LocalBottomBarInset.current),
             verticalArrangement = Arrangement.spacedBy(if (compactHeight) 12.dp else 16.dp),
         ) {
             item(key = "greeting") {
@@ -256,7 +253,7 @@ fun HomeScreen(
                         modifier = Modifier.weight(1f),
                     )
                     QuickCard(
-                        icon = Icons.Outlined.QueueMusic,
+                        icon = Icons.AutoMirrored.Outlined.QueueMusic,
                         title = "本地歌单",
                         subtitle = "${playlists.size} 个",
                         onClick = onOpenPlaylists,
@@ -334,7 +331,7 @@ private fun ContinueCard(
     GlassSurface(
         onClick = onPlay,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Row(
             modifier = Modifier
@@ -391,7 +388,7 @@ private fun QuickCard(
         onClick = onClick,
         modifier = modifier,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(
             modifier = Modifier
@@ -425,7 +422,7 @@ private fun AccountPromptCard(onClick: () -> Unit) {
     GlassSurface(
         onClick = onClick,
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Row(
             modifier = Modifier
@@ -483,7 +480,7 @@ private fun QuickEntry(
         onClick = onClick,
         modifier = modifier,
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(
             modifier = Modifier
@@ -629,7 +626,7 @@ private fun NcmSection(
                 modifier = Modifier.weight(1f),
             )
             QuickEntry(
-                icon = Icons.Outlined.QueueMusic,
+                icon = Icons.AutoMirrored.Outlined.QueueMusic,
                 title = "我的歌单",
                 onClick = onOpenMyPlaylists,
                 modifier = Modifier.weight(1f),
@@ -713,7 +710,7 @@ private fun QqSection(
                 modifier = Modifier.weight(1f),
             )
             QuickEntry(
-                icon = Icons.Outlined.QueueMusic,
+                icon = Icons.AutoMirrored.Outlined.QueueMusic,
                 title = "我的歌单",
                 onClick = onOpenMyPlaylists,
                 modifier = Modifier.weight(1f),

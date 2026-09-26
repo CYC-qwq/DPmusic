@@ -6,7 +6,13 @@ import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.model.chainFor
+import com.dpmusic.app.core.util.AppLogger
 import com.dpmusic.app.core.util.CircuitBreaker
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** 音源解析异常 */
 open class ResolveException(message: String, val platform: MusicPlatform? = null) : Exception(message)
@@ -45,12 +51,40 @@ class LxResolver(private val apiKeyProvider: () -> String) {
 
     private val cache = object : LruCache<String, CachedUrl>(64) {}
 
+    /**
+     * 并发去重：同一首歌 + 同一档位，同一时刻只发一次 HTTP 请求。
+     *
+     * 实测问题：切歌时的「目标解析」与「下一曲预解析」会同时命中同一首歌，
+     * 两边都查不到缓存（写入发生在请求返回之后）→ 同一首在 136ms 内请求两次，
+     * 白白消耗音源配额。这里用 in-flight 表让后来者复用同一个请求结果。
+     */
+    private val inFlight = mutableMapOf<String, Deferred<ResolvedUrl>>()
+    private val inFlightMutex = Mutex()
+
     suspend fun resolve(song: Song, quality: PlayQuality): ResolvedUrl {
         val cacheKey = "${song.stableKey}@${quality.id}"
         cache.get(cacheKey)?.let {
             if (System.currentTimeMillis() - it.at < URL_TTL_MS) return ResolvedUrl(it.url, it.qualityId)
         }
 
+        // 已有同一首歌的请求在途 → 直接等它的结果，不重复发请求
+        return coroutineScope {
+            val shared = inFlightMutex.withLock {
+                inFlight[cacheKey] ?: async { doResolve(cacheKey, song, quality) }
+                    .also { inFlight[cacheKey] = it }
+            }
+            try {
+                shared.await()
+            } finally {
+                inFlightMutex.withLock {
+                    if (inFlight[cacheKey] === shared) inFlight.remove(cacheKey)
+                }
+            }
+        }
+    }
+
+    /** 实际执行一次解析（缓存未命中、且无同曲在途请求时才会走到这里） */
+    private suspend fun doResolve(cacheKey: String, song: Song, quality: PlayQuality): ResolvedUrl {
         val apiKey = apiKeyProvider().trim()
         if (apiKey.isEmpty()) {
             throw AuthFailureException("未配置音源 Key：请在「设置 → 音频偏好」中填写")
@@ -85,6 +119,8 @@ class LxResolver(private val apiKeyProvider: () -> String) {
     fun clearCache() = cache.evictAll()
 
     private suspend fun requestUrl(source: String, songId: String, quality: String, apiKey: String): String {
+        // 计数用：这一行代表一次**真实的音源代理 HTTP 请求**（缓存命中不会走到这里）
+        AppLogger.d(TAG, "→ 音源代理请求 source=$source songId=$songId quality=$quality")
         val url = "$API_BASE/url?source=${urlEnc(source)}&songId=${urlEnc(songId)}&quality=${urlEnc(quality)}"
         val raw = Http.get(
             url,
@@ -105,6 +141,7 @@ class LxResolver(private val apiKeyProvider: () -> String) {
     }
 
     private companion object {
+        const val TAG = "LxResolver"
         const val API_BASE = "https://source.shiqianjiang.cn/api/music"
         const val URL_TTL_MS = 8 * 60_000L
 

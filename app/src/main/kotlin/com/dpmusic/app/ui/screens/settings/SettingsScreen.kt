@@ -35,9 +35,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.outlined.Article
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudOff
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.outlined.Lyrics
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Palette
@@ -53,7 +55,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.ViewList
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -117,11 +119,18 @@ import com.dpmusic.app.ui.components.DesktopLyricSheet
 import com.dpmusic.app.ui.components.DislikeManagerSheet
 import com.dpmusic.app.ui.components.DpTopAppBar
 import com.dpmusic.app.ui.components.GlassSurface
+import com.dpmusic.app.ui.components.NCM_COOKIE_URL
+import com.dpmusic.app.ui.components.NCM_LOGIN_COOKIE_KEYS
+import com.dpmusic.app.ui.components.NCM_LOGIN_URL
+import com.dpmusic.app.ui.components.NCM_MOBILE_UA
+import com.dpmusic.app.ui.components.WebLoginDialog
 import com.dpmusic.app.ui.theme.ThemePalette
 import com.dpmusic.app.ui.theme.themePaletteById
 import com.dpmusic.app.ui.theme.themePalettes
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 设置页：
@@ -133,6 +142,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(
     windowSizeClass: WindowSizeClass,
+    onBack: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenSources: () -> Unit,
     onOpenDownloadManager: () -> Unit,
@@ -200,11 +210,9 @@ fun SettingsScreen(
                 title = "设置",
                 windowSizeClass = windowSizeClass,
                 navigationIcon = {
-                    Icon(
-                        imageVector = Icons.Outlined.Settings,
-                        contentDescription = null,
-                        modifier = Modifier.padding(start = 16.dp),
-                    )
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
                 },
             )
         },
@@ -216,7 +224,10 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(
+                start = 16.dp, top = 16.dp, end = 16.dp,
+                bottom = 16.dp + LocalBottomBarInset.current,
+            ),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 item {
@@ -501,7 +512,7 @@ private fun SettingsCard(
     GlassSurface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -599,7 +610,7 @@ private fun AudioSourceCard(
         Spacer(Modifier.height(14.dp))
         Surface(
             shape = MaterialTheme.shapes.medium,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
         ) {
             Text(
                 text = "声明：本项目非该音源官方项目，仅为开发用途内置了该音源的解析链接。请自行在官网获取有效 Key 并遵守其服务条款。",
@@ -665,6 +676,7 @@ private fun NcmCard(
     onConsumeSyncMessage: () -> Unit,
 ) {
     var showCookieDialog by remember { mutableStateOf(false) }
+    var showWebLogin by remember { mutableStateOf(false) }
 
     // 同步提示 6 秒后自动消失
     val syncMessage = syncState.message
@@ -714,12 +726,32 @@ private fun NcmCard(
                 FilledTonalButton(
                     onClick = {
                         onConsumeMessage()
+                        showWebLogin = true
+                    },
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.Login,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("快速登录")
+                }
+                OutlinedButton(
+                    onClick = {
+                        onConsumeMessage()
                         showCookieDialog = true
                     },
                 ) {
                     Text("填写 Cookie")
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "快速登录：在官方页面里登录，自动获取登录态，无需手动复制 Cookie",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         } else {
             OutlinedButton(onClick = onClearCookie) {
                 Text("退出登录")
@@ -733,14 +765,14 @@ private fun NcmCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "红心自动同步",
+                        text = "红心同步（云端 → 本地）",
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
                         text = when {
                             syncState.syncing -> "正在同步…"
                             syncState.lastSyncAt > 0 -> "上次同步：${formatRelativeTime(syncState.lastSyncAt)}"
-                            else -> "启动后自动同步（本地 ⇄ 网易云）"
+                            else -> "启动后自动拉取云端红心"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -773,6 +805,29 @@ private fun NcmCard(
             onSave = onSaveCookie,
             onDismiss = {
                 showCookieDialog = false
+                onConsumeMessage()
+            },
+        )
+    }
+
+    if (showWebLogin) {
+        WebLoginDialog(
+            title = "网易云音乐登录",
+            subtitle = "在官方页面完成登录，自动获取登录态",
+            startUrl = NCM_LOGIN_URL,
+            cookieUrl = NCM_COOKIE_URL,
+            requiredCookieKeys = NCM_LOGIN_COOKIE_KEYS,
+            userAgent = NCM_MOBILE_UA,
+            busy = login.busy,
+            message = login.message,
+            success = login.success,
+            onCookie = onSaveCookie,
+            onFallbackPaste = {
+                showWebLogin = false
+                showCookieDialog = true
+            },
+            onDismiss = {
+                showWebLogin = false
                 onConsumeMessage()
             },
         )
@@ -899,15 +954,13 @@ private fun QqCard(
         }
         Spacer(Modifier.height(14.dp))
         if (profile == null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(
-                    onClick = {
-                        onConsumeMessage()
-                        showCookieDialog = true
-                    },
-                ) {
-                    Text("填写 Cookie")
-                }
+            OutlinedButton(
+                onClick = {
+                    onConsumeMessage()
+                    showCookieDialog = true
+                },
+            ) {
+                Text("填写 Cookie")
             }
         } else {
             OutlinedButton(onClick = onClearCookie) {
@@ -952,6 +1005,7 @@ private fun QqCard(
                 )
             }
         }
+
     }
     if (showCookieDialog) {
         QqCookieDialog(
@@ -1113,7 +1167,7 @@ private fun AppearanceCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = "毛玻璃外观", style = MaterialTheme.typography.bodyLarge)
+                Text(text = "玻璃风格", style = MaterialTheme.typography.bodyLarge)
                 Text(
                     text = "半透明磨砂面板 + 全局流光背景；Android 12+ 支持真实模糊，低版本自动降级",
                     style = MaterialTheme.typography.bodySmall,
@@ -1302,7 +1356,7 @@ private fun ListDisplayCard(
     dislikeCount: Int,
     onOpenDislikeManager: () -> Unit,
 ) {
-    SettingsCard(title = "列表显示", icon = Icons.Outlined.ViewList) {
+    SettingsCard(title = "列表显示", icon = Icons.AutoMirrored.Outlined.ViewList) {
         ListDisplayToggle(
             title = "显示平台来源",
             subtitle = "在歌名右侧显示网易云 / QQ / 酷狗徽标",
@@ -1420,9 +1474,25 @@ private fun CacheCard(
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            text = "最大可占用（超出后自动按最久未用逐出）",
+            text = "最大可占用（超出后自动清理）",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        // 状态行：当前总占用 / 上限；超出时高亮提示「将自动清理」
+        val capBytes = StorageManager.capBytesOf(capMb)
+        val overCap = capMb > 0 && usage.totalCacheBytes > capBytes
+        Text(
+            text = when {
+                capMb <= 0 -> "当前占用 ${StorageManager.formatBytes(usage.totalCacheBytes)}（不限制）"
+                overCap -> "当前占用 ${StorageManager.formatBytes(usage.totalCacheBytes)}，已超出上限，" +
+                    "将自动清理"
+                else -> "当前占用 ${StorageManager.formatBytes(usage.totalCacheBytes)} / " +
+                    "上限 ${StorageManager.capLabel(capMb)}"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (overCap) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1441,7 +1511,7 @@ private fun CacheCard(
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilledTonalButton(onClick = onSmartClean) {
-                Text("智能清理")
+                Text("立即清理")
             }
             OutlinedButton(onClick = onClearCoverCache) {
                 Text("清空图片缓存")
@@ -1479,7 +1549,7 @@ private val STORAGE_CAP_OPTIONS = listOf(
 
 @Composable
 private fun LogsCard(onOpenLogs: () -> Unit) {
-    SettingsCard(title = "诊断与日志", icon = Icons.Outlined.Article) {
+    SettingsCard(title = "诊断与日志", icon = Icons.AutoMirrored.Outlined.Article) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()

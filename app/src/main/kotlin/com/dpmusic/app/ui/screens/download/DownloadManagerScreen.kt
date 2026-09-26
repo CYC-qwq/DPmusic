@@ -50,6 +50,7 @@ import com.dpmusic.app.ui.components.EmptyState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.dpmusic.app.ui.theme.LocalBottomBarInset
 
 /**
  * 下载管理页：
@@ -102,7 +103,7 @@ fun DownloadManagerScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp + LocalBottomBarInset.current),
                 ) {
                     items(tasks, key = { it.id }) { task ->
                         DownloadTaskRow(
