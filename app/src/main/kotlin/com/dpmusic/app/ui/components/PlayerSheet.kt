@@ -8,6 +8,7 @@ import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -87,6 +89,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -97,7 +100,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.dpmusic.app.ui.theme.glassPanelColor
+import com.dpmusic.app.ui.theme.animateColorScheme
+import com.dpmusic.app.ui.theme.coverColorScheme
+import com.dpmusic.app.ui.theme.CoverColorStyle
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -114,6 +121,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
@@ -129,6 +137,7 @@ import com.dpmusic.app.AppContainer
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.Song
+import com.dpmusic.app.core.model.exceedsCeiling
 import com.dpmusic.app.core.playback.NowPlaying
 import com.dpmusic.app.core.util.formatDuration
 import com.dpmusic.app.ui.player.PlayerLyricsState
@@ -177,6 +186,10 @@ fun PlayerSheetHost(
     onRetryLyrics: () -> Unit,
     onDragDelta: (Float) -> Unit,
     onDragEnd: (Float) -> Unit,
+    visualizerEnabled: Boolean = false,
+    visualizerMode: VisualizerMode = VisualizerMode.BOTH,
+    /** 封面种子色（MCU）：非 [Color.Unspecified] 且设置开关打开时，播放页换用该色推导的整套 MD3 配色 */
+    coverSeed: Color = Color.Unspecified,
     coverModifier: Modifier = Modifier,
     modifier: Modifier = Modifier,
 ) {
@@ -200,262 +213,321 @@ fun PlayerSheetHost(
     var showDesktopLyric by remember { mutableStateOf(false) }
     var showNcmShare by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val appSettings by AppContainer.settings.settings.collectAsStateWithLifecycle()
 
-    Surface(
-        modifier = modifier
-            .fillMaxSize()
-            .layout { measurable, constraints ->
-                // 布局级位移（而非 graphicsLayer 平移）：让共享元素系统读取到真实的滑动坐标
-                val placeable = measurable.measure(constraints)
-                val slide = ((1f - progress.value.coerceIn(0f, 1f)) * constraints.maxHeight).roundToInt()
-                layout(placeable.width, placeable.height) { placeable.place(0, slide) }
-            }
-            .clip(RoundedCornerShape(28.dp * (1f - p))),
-        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-    ) {
-        // 【玻璃规范 L0｜不透明层】播放页是长时间阅读场景（歌词），不做透明玻璃：
-        // 用「封面调色板染色的不透明竖向渐变」做底，既保留专辑氛围又保证对比度。
-        val glassBase = MaterialTheme.colorScheme.surfaceContainerLowest
-        val glassMix = if (isSystemInDarkTheme()) 0.26f else 0.34f
-        val bgTop = paletteColors.getOrNull(0)?.let { lerp(glassBase, it, glassMix) } ?: glassBase
-        val bgMid = paletteColors.getOrNull(1)?.let { lerp(glassBase, it, glassMix * 0.62f) } ?: glassBase
-        val bgLow = paletteColors.getOrNull(2)?.let { lerp(glassBase, it, glassMix * 0.34f) } ?: glassBase
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawBehind {
-                    drawRect(
-                        Brush.verticalGradient(
-                            colors = listOf(bgTop, bgMid, bgLow, glassBase),
-                            startY = 0f,
-                            endY = size.height,
-                        ),
-                    )
-                },
+    // 「播放页封面动态取色」：封面种子色 → 整套 MD3 配色，仅在本页范围内覆盖 colorScheme，
+    // 不动全局主题；未开启 / 无种子（封面近无彩色）时原样沿用全局配色。
+    // 深浅判定取自当前生效配色（而非 isSystemInDarkTheme）：否则「跟随系统浅色 + 强制深色 2」
+    // 时会推导出一套浅色配色，与页面其余部分冲突。
+    val baseScheme = MaterialTheme.colorScheme
+    val coverColorOn = appSettings.coverDynamicColor && coverSeed != Color.Unspecified
+    val playerColorScheme = if (coverColorOn) {
+        val dark = baseScheme.surface.luminance() < 0.5f
+        val target = remember(coverSeed, appSettings.coverColorStyle, dark) {
+            coverColorScheme(
+                seed = coverSeed,
+                isDark = dark,
+                style = CoverColorStyle.fromId(appSettings.coverColorStyle),
+            )
+        }
+        // 切歌即换色：整套配色逐槽位插值过渡，避免整页「啪」地跳色
+        animateColorScheme(
+            key = Triple(coverSeed, appSettings.coverColorStyle, dark),
+            target = target,
+            durationMillis = CoverColorTransitionMillis,
         )
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val isLandscape = maxWidth > maxHeight * 1.15f
-            val openMenu: () -> Unit = { showMenu = true }
+    } else {
+        baseScheme
+    }
 
-            // 歌词字号 / 行距：横竖屏分别记忆（持久化到设置，重开应用后保留）
-            val appSettings by AppContainer.settings.settings.collectAsStateWithLifecycle()
-            // 私人FM入口的登录态（需登录才显示）
-            val ncmCookie by AppContainer.ncm.cookie.collectAsStateWithLifecycle()
-            val ncmLoggedIn = ncmCookie.isNotBlank()
-            val scope = rememberCoroutineScope()
-            val lyricScale = if (isLandscape) appSettings.lyricScaleLandscape else appSettings.lyricScalePortrait
-            val verbatimLyric = appSettings.verbatimLyric
-            val simulatedVerbatim = appSettings.simulatedVerbatim
-            val onLyricScaleChange: (Float) -> Unit = { scale ->
-                scope.launch {
-                    if (isLandscape) AppContainer.settings.setLyricScaleLandscape(scale)
-                    else AppContainer.settings.setLyricScalePortrait(scale)
+    // 流光背景 / 歌词辉光用的封面调色板同样逐槽位过渡（与上面的换色同节奏）
+    val animatedPalette = rememberAnimatedPalette(paletteColors)
+
+    MaterialTheme(colorScheme = playerColorScheme) {
+        Surface(
+            modifier = modifier
+                .fillMaxSize()
+                .layout { measurable, constraints ->
+                    // 布局级位移（而非 graphicsLayer 平移）：让共享元素系统读取到真实的滑动坐标
+                    val placeable = measurable.measure(constraints)
+                    val slide = ((1f - progress.value.coerceIn(0f, 1f)) * constraints.maxHeight).roundToInt()
+                    layout(placeable.width, placeable.height) { placeable.place(0, slide) }
                 }
-            }
-            val lyricSpacing = if (isLandscape) appSettings.lyricSpacingLandscape else appSettings.lyricSpacingPortrait
-            val onLyricSpacingChange: (Float) -> Unit = { scale ->
-                scope.launch {
-                    if (isLandscape) AppContainer.settings.setLyricSpacingLandscape(scale)
-                    else AppContainer.settings.setLyricSpacingPortrait(scale)
+                .clip(RoundedCornerShape(28.dp * (1f - p))),
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        ) {
+            // 【玻璃规范 L0｜不透明层】播放页是长时间阅读场景（歌词），不做透明玻璃：
+            // 用「封面调色板染色的不透明竖向渐变」做底，既保留专辑氛围又保证对比度。
+            val glassBase = MaterialTheme.colorScheme.surfaceContainerLowest
+            val glassMix = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) 0.26f else 0.34f
+            val bgTop = animatedPalette.getOrNull(0)?.let { lerp(glassBase, it, glassMix) } ?: glassBase
+            val bgMid = animatedPalette.getOrNull(1)?.let { lerp(glassBase, it, glassMix * 0.62f) } ?: glassBase
+            val bgLow = animatedPalette.getOrNull(2)?.let { lerp(glassBase, it, glassMix * 0.34f) } ?: glassBase
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .drawBehind {
+                        drawRect(
+                            Brush.verticalGradient(
+                                colors = listOf(bgTop, bgMid, bgLow, glassBase),
+                                startY = 0f,
+                                endY = size.height,
+                            ),
+                        )
+                    },
+            )
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val isLandscape = maxWidth > maxHeight * 1.15f
+                val openMenu: () -> Unit = { showMenu = true }
+
+                // 歌词字号 / 行距：横竖屏分别记忆（持久化到设置，重开应用后保留）
+                // 私人FM入口的登录态（需登录才显示）
+                val ncmCookie by AppContainer.ncm.cookie.collectAsStateWithLifecycle()
+                val ncmLoggedIn = ncmCookie.isNotBlank()
+                val scope = rememberCoroutineScope()
+                val lyricScale = if (isLandscape) appSettings.lyricScaleLandscape else appSettings.lyricScalePortrait
+                val verbatimLyric = appSettings.verbatimLyric
+                val simulatedVerbatim = appSettings.simulatedVerbatim
+                val onLyricScaleChange: (Float) -> Unit = { scale ->
+                    scope.launch {
+                        if (isLandscape) AppContainer.settings.setLyricScaleLandscape(scale)
+                        else AppContainer.settings.setLyricScalePortrait(scale)
+                    }
                 }
-            }
+                val lyricSpacing = if (isLandscape) appSettings.lyricSpacingLandscape else appSettings.lyricSpacingPortrait
+                val onLyricSpacingChange: (Float) -> Unit = { scale ->
+                    scope.launch {
+                        if (isLandscape) AppContainer.settings.setLyricSpacingLandscape(scale)
+                        else AppContainer.settings.setLyricSpacingPortrait(scale)
+                    }
+                }
 
-            if (isLandscape) {
-                PlayerContentLandscape(
-                    nowPlaying = nowPlaying,
-                    lyricsState = lyricsState,
-                    paletteColors = paletteColors,
-                    isFavorite = isFavorite,
-                    dragModifier = dragModifier,
-                    coverModifier = coverModifier,
-                    onCollapse = onCollapse,
-                    onTogglePlay = onTogglePlay,
-                    onNext = onNext,
-                    onPrevious = onPrevious,
-                    onSeek = onSeek,
-                    onToggleFavorite = onToggleFavorite,
-                    onOpenShare = { showShare = true },
-                    lyricScale = lyricScale,
-                    onLyricScaleChange = onLyricScaleChange,
-                    lyricSpacing = lyricSpacing,
-                    onLyricSpacingChange = onLyricSpacingChange,
-                    verbatim = verbatimLyric,
-                    simulatedVerbatim = simulatedVerbatim,
-                    onOpenMenu = openMenu,
-                    onToggleRepeat = onToggleRepeat,
-                    onToggleShuffle = onToggleShuffle,
-                    onRetryLyrics = onRetryLyrics,
-                )
-            } else {
-                PlayerContentPortrait(
-                    nowPlaying = nowPlaying,
-                    lyricsState = lyricsState,
-                    paletteColors = paletteColors,
-                    isFavorite = isFavorite,
-                    dragModifier = dragModifier,
-                    coverModifier = coverModifier,
-                    onCollapse = onCollapse,
-                    onTogglePlay = onTogglePlay,
-                    onNext = onNext,
-                    onPrevious = onPrevious,
-                    onSeek = onSeek,
-                    onToggleFavorite = onToggleFavorite,
-                    onOpenShare = { showShare = true },
-                    lyricScale = lyricScale,
-                    onLyricScaleChange = onLyricScaleChange,
-                    lyricSpacing = lyricSpacing,
-                    onLyricSpacingChange = onLyricSpacingChange,
-                    verbatim = verbatimLyric,
-                    simulatedVerbatim = simulatedVerbatim,
-                    onOpenMenu = openMenu,
-                    onToggleRepeat = onToggleRepeat,
-                    onToggleShuffle = onToggleShuffle,
-                    onRetryLyrics = onRetryLyrics,
-                )
-            }
-
-            // 「⋯」更多菜单（横竖屏共用：播放队列 + 音质选择）
-            if (showMenu) {
-                PlayerMenuSheet(
-                    song = nowPlaying?.song,
-                    current = nowPlaying?.quality ?: PlayQuality.HIGH,
-                    desired = nowPlaying?.desiredQuality ?: PlayQuality.HIGH,
-                    onSelectQuality = { quality ->
-                        onSelectQuality(quality)
-                        showMenu = false
-                    },
-                    onOpenQueue = {
-                        showMenu = false
-                        onOpenQueue()
-                    },
-                    onAddToPlaylist = {
-                        showMenu = false
-                        onAddToPlaylist()
-                    },
-                    onOpenEqualizer = {
-                        showMenu = false
-                        showEqualizer = true
-                    },
-                    onOpenDownload = {
-                        showMenu = false
-                        showDownload = true
-                    },
-                    onOpenComments = {
-                        showMenu = false
-                        showComments = true
-                    },
-                    onOpenArtist = {
-                        showMenu = false
-                        nowPlaying?.song?.let { s ->
-                            s.extra["wy_artist_id"]?.let { id -> onShowArtist(id, s.artist) }
-                        }
-                    },
-                    onOpenAlbum = {
-                        showMenu = false
-                        nowPlaying?.song?.let { s ->
-                            s.extra["wy_album_id"]?.let { id -> onShowAlbum(id) }
-                        }
-                    },
-                    onOpenSimilar = {
-                        showMenu = false
-                        onShowSimilarSongs()
-                    },
-                    onOpenSpeed = {
-                        showMenu = false
-                        showSpeed = true
-                    },
-                    onOpenSleepTimer = {
-                        showMenu = false
-                        showSleepTimer = true
-                    },
-                    onDislike = {
-                        showMenu = false
-                        AppContainer.player.dislikeCurrent()
-                    },
-                    showFm = ncmLoggedIn,
-                    onStartFm = {
-                        showMenu = false
-                        AppContainer.ncmFm.start()
-                    },
-                    onOpenDesktopLyric = {
-                        showMenu = false
-                        showDesktopLyric = true
-                    },
-                    desktopLyricOn = appSettings.desktopLyricEnabled,
-                    onDismiss = { showMenu = false },
-                )
-            }
-
-            // 音效均衡器（全屏底部面板）
-            if (showEqualizer) {
-                EqualizerSheet(onDismiss = { showEqualizer = false })
-            }
-
-            // 播放速度（变速不变调）
-            if (showSpeed) {
-                PlaybackSpeedSheet(onDismiss = { showSpeed = false })
-            }
-
-            // 定时退出（到点自动暂停）
-            if (showSleepTimer) {
-                SleepTimerSheet(onDismiss = { showSleepTimer = false })
-            }
-
-            // 下载歌曲（音质选择 + 可选歌词）
-            if (showDownload) {
-                DownloadSheet(
-                    song = nowPlaying?.song,
-                    defaultQuality = nowPlaying?.desiredQuality ?: PlayQuality.HIGH,
-                    onDismiss = { showDownload = false },
-                )
-            }
-
-            // 分享歌曲（官方 / 音源链接组合）
-            if (showShare) {
-                nowPlaying?.song?.let { shareSong ->
-                    SongShareSheet(
-                        song = shareSong,
-                        quality = nowPlaying?.quality ?: PlayQuality.HIGH,
-                        onDismiss = { showShare = false },
-                        onShareToNcm = { showNcmShare = true },
+                if (isLandscape) {
+                    PlayerContentLandscape(
+                        nowPlaying = nowPlaying,
+                        lyricsState = lyricsState,
+                        paletteColors = animatedPalette,
+                        isFavorite = isFavorite,
+                        dragModifier = dragModifier,
+                        coverModifier = coverModifier,
+                        onCollapse = onCollapse,
+                        onTogglePlay = onTogglePlay,
+                        onNext = onNext,
+                        onPrevious = onPrevious,
+                        onSeek = onSeek,
+                        onToggleFavorite = onToggleFavorite,
+                        onOpenShare = { showShare = true },
+                        lyricScale = lyricScale,
+                        onLyricScaleChange = onLyricScaleChange,
+                        lyricSpacing = lyricSpacing,
+                        onLyricSpacingChange = onLyricSpacingChange,
+                        verbatim = verbatimLyric,
+                        simulatedVerbatim = simulatedVerbatim,
+                        onOpenMenu = openMenu,
+                        onToggleRepeat = onToggleRepeat,
+                        onToggleShuffle = onToggleShuffle,
+                        onRetryLyrics = onRetryLyrics,
+                        visualizerEnabled = visualizerEnabled,
+                        visualizerMode = visualizerMode,
+                    )
+                } else {
+                    PlayerContentPortrait(
+                        nowPlaying = nowPlaying,
+                        lyricsState = lyricsState,
+                        paletteColors = animatedPalette,
+                        isFavorite = isFavorite,
+                        dragModifier = dragModifier,
+                        coverModifier = coverModifier,
+                        onCollapse = onCollapse,
+                        onTogglePlay = onTogglePlay,
+                        onNext = onNext,
+                        onPrevious = onPrevious,
+                        onSeek = onSeek,
+                        onToggleFavorite = onToggleFavorite,
+                        onOpenShare = { showShare = true },
+                        lyricScale = lyricScale,
+                        onLyricScaleChange = onLyricScaleChange,
+                        lyricSpacing = lyricSpacing,
+                        onLyricSpacingChange = onLyricSpacingChange,
+                        verbatim = verbatimLyric,
+                        simulatedVerbatim = simulatedVerbatim,
+                        onOpenMenu = openMenu,
+                        onToggleRepeat = onToggleRepeat,
+                        onToggleShuffle = onToggleShuffle,
+                        onRetryLyrics = onRetryLyrics,
+                        visualizerEnabled = visualizerEnabled,
+                        visualizerMode = visualizerMode,
                     )
                 }
-            }
 
-            // 分享给网易云好友（歌曲卡片 → 网易云私信）
-            if (showNcmShare) {
-                nowPlaying?.song?.let { ncmSong ->
-                    ShareToNcmFriendDialog(
-                        song = ncmSong,
-                        onDismiss = { showNcmShare = false },
-                        onSent = { nickname ->
-                            showNcmShare = false
-                            Toast.makeText(
-                                context,
-                                "已分享给 ${nickname.ifBlank { "好友" }}",
-                                Toast.LENGTH_SHORT,
-                            ).show()
+                // 「⋯」更多菜单（横竖屏共用：播放队列 + 音质选择）
+                if (showMenu) {
+                    PlayerMenuSheet(
+                        song = nowPlaying?.song,
+                        current = nowPlaying?.quality ?: PlayQuality.HIGH,
+                        desired = nowPlaying?.desiredQuality ?: PlayQuality.HIGH,
+                        onSelectQuality = { quality ->
+                            onSelectQuality(quality)
+                            showMenu = false
                         },
+                        onOpenQueue = {
+                            showMenu = false
+                            onOpenQueue()
+                        },
+                        onAddToPlaylist = {
+                            showMenu = false
+                            onAddToPlaylist()
+                        },
+                        onOpenEqualizer = {
+                            showMenu = false
+                            showEqualizer = true
+                        },
+                        onOpenDownload = {
+                            showMenu = false
+                            showDownload = true
+                        },
+                        onOpenComments = {
+                            showMenu = false
+                            showComments = true
+                        },
+                        onOpenArtist = {
+                            showMenu = false
+                            nowPlaying?.song?.let { s ->
+                                s.extra["wy_artist_id"]?.let { id -> onShowArtist(id, s.artist) }
+                            }
+                        },
+                        onOpenAlbum = {
+                            showMenu = false
+                            nowPlaying?.song?.let { s ->
+                                s.extra["wy_album_id"]?.let { id -> onShowAlbum(id) }
+                            }
+                        },
+                        onOpenSimilar = {
+                            showMenu = false
+                            onShowSimilarSongs()
+                        },
+                        onOpenSpeed = {
+                            showMenu = false
+                            showSpeed = true
+                        },
+                        onOpenSleepTimer = {
+                            showMenu = false
+                            showSleepTimer = true
+                        },
+                        onDislike = {
+                            showMenu = false
+                            AppContainer.player.dislikeCurrent()
+                        },
+                        showFm = ncmLoggedIn,
+                        onStartFm = {
+                            showMenu = false
+                            AppContainer.ncmFm.start()
+                        },
+                        onOpenDesktopLyric = {
+                            showMenu = false
+                            showDesktopLyric = true
+                        },
+                        desktopLyricOn = appSettings.desktopLyricEnabled,
+                        onDismiss = { showMenu = false },
                     )
                 }
-            }
 
-            // 歌曲评论（热门 + 最新）
-            if (showComments) {
-                nowPlaying?.song?.let { commentSong ->
-                    CommentsSheet(
-                        song = commentSong,
-                        onDismiss = { showComments = false },
+                // 音效均衡器（全屏底部面板）
+                if (showEqualizer) {
+                    EqualizerSheet(onDismiss = { showEqualizer = false })
+                }
+
+                // 播放速度（变速不变调）
+                if (showSpeed) {
+                    PlaybackSpeedSheet(onDismiss = { showSpeed = false })
+                }
+
+                // 定时退出（到点自动暂停）
+                if (showSleepTimer) {
+                    SleepTimerSheet(onDismiss = { showSleepTimer = false })
+                }
+
+                // 下载歌曲（音质选择 + 可选歌词）
+                if (showDownload) {
+                    DownloadSheet(
+                        song = nowPlaying?.song,
+                        defaultQuality = nowPlaying?.desiredQuality ?: PlayQuality.HIGH,
+                        onDismiss = { showDownload = false },
                     )
                 }
-            }
 
-            // 桌面歌词（悬浮窗样式与预设）
-            if (showDesktopLyric) {
-                DesktopLyricSheet(onDismiss = { showDesktopLyric = false })
+                // 分享歌曲（官方 / 音源链接组合）
+                if (showShare) {
+                    nowPlaying?.song?.let { shareSong ->
+                        SongShareSheet(
+                            song = shareSong,
+                            quality = nowPlaying?.quality ?: PlayQuality.HIGH,
+                            onDismiss = { showShare = false },
+                            onShareToNcm = { showNcmShare = true },
+                        )
+                    }
+                }
+
+                // 分享给网易云好友（歌曲卡片 → 网易云私信）
+                if (showNcmShare) {
+                    nowPlaying?.song?.let { ncmSong ->
+                        ShareToNcmFriendDialog(
+                            song = ncmSong,
+                            onDismiss = { showNcmShare = false },
+                            onSent = { nickname ->
+                                showNcmShare = false
+                                Toast.makeText(
+                                    context,
+                                    "已分享给 ${nickname.ifBlank { "好友" }}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
+                        )
+                    }
+                }
+
+                // 歌曲评论（热门 + 最新）
+                if (showComments) {
+                    nowPlaying?.song?.let { commentSong ->
+                        CommentsSheet(
+                            song = commentSong,
+                            onDismiss = { showComments = false },
+                        )
+                    }
+                }
+
+                // 桌面歌词（悬浮窗样式与预设）
+                if (showDesktopLyric) {
+                    DesktopLyricSheet(onDismiss = { showDesktopLyric = false })
+                }
             }
         }
     }
+}
+
+/** 封面配色过渡时长（ms）：比全局主题切换略缓，切歌换色更从容 */
+private const val CoverColorTransitionMillis = 650
+
+/** 封面调色板固定 4 槽（Palette 最多取 4 色）：槽位固定，动画结构才稳定 */
+private const val PaletteSlots = 4
+
+/**
+ * 封面调色板过渡：切歌时流光背景 / 歌词辉光跟随封面平滑换色。
+ *
+ * 逐槽位动画而非整体替换 —— [CoverPalette.colors] 一次给的是多个角色色
+ * （vibrant / darkVibrant / lightVibrant / muted），直接换会「啪」地跳色。
+ * 空列表原样返回空，保持「无封面色」分支不变。
+ */
+@Composable
+private fun rememberAnimatedPalette(target: List<Color>): List<Color> {
+    if (target.isEmpty()) return emptyList()
+    val slots = List(PaletteSlots) { index -> target.getOrNull(index) ?: target.last() }
+    val spec = tween<Color>(CoverColorTransitionMillis, easing = FastOutSlowInEasing)
+    val c0 = animateColorAsState(slots[0], spec, label = "coverPalette0")
+    val c1 = animateColorAsState(slots[1], spec, label = "coverPalette1")
+    val c2 = animateColorAsState(slots[2], spec, label = "coverPalette2")
+    val c3 = animateColorAsState(slots[3], spec, label = "coverPalette3")
+    return listOf(c0.value, c1.value, c2.value, c3.value).take(target.size)
 }
 
 /* ---------------- 竖屏：视听舞台（封面 ⇄ 歌词同空间切换）+ 信息 + 控制卡片 ---------------- */
@@ -485,6 +557,8 @@ private fun PlayerContentPortrait(
     onToggleRepeat: () -> Unit,
     onToggleShuffle: () -> Unit,
     onRetryLyrics: () -> Unit,
+    visualizerEnabled: Boolean,
+    visualizerMode: VisualizerMode,
 ) {
     var lyricsMode by rememberSaveable { mutableStateOf(false) }
     val modeT by animateFloatAsState(
@@ -624,6 +698,15 @@ private fun PlayerContentPortrait(
 
             Spacer(Modifier.height(16.dp))
 
+            // 示波器（设置内可开关；关闭时不占任何空间）
+            // 无卡片背景：波形直接叠在页面流光底上
+            SpectrumVisualizer(
+                enabled = visualizerEnabled,
+                mode = visualizerMode,
+                modifier = Modifier.padding(horizontal = 0.dp),
+            )
+            if (visualizerEnabled) Spacer(Modifier.height(14.dp))
+
             // 控制卡片（shaped container）：进度 + 控制收成一个"组"
             Surface(
                 modifier = Modifier
@@ -685,6 +768,8 @@ private fun PlayerContentLandscape(
     onToggleRepeat: () -> Unit,
     onToggleShuffle: () -> Unit,
     onRetryLyrics: () -> Unit,
+    visualizerEnabled: Boolean,
+    visualizerMode: VisualizerMode,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         AmbientBackdrop(
@@ -747,6 +832,12 @@ private fun PlayerContentLandscape(
                     onToggleRepeat = onToggleRepeat,
                     onToggleShuffle = onToggleShuffle,
                     compact = true,
+                )
+                // 示波器（横屏放在左栏底部；关闭时不占空间）
+                SpectrumVisualizer(
+                    enabled = visualizerEnabled,
+                    mode = visualizerMode,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
 
@@ -1416,6 +1507,9 @@ private fun PlayerMenuSheet(
 ) {
     val appSettings by AppContainer.settings.settings.collectAsStateWithLifecycle()
     val sleepTimerState by AppContainer.sleepTimer.state.collectAsStateWithLifecycle()
+    // 账号会员态（B 站）：决定能否选无损 / 全景声 —— 用账号情况过滤可选档位
+    val biliVip by remember { AppContainer.bili.account }.collectAsStateWithLifecycle()
+    val biliIsVip = biliVip?.isVip == true
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // 手风琴：同一时间只展开一个分组（点击标题展开 / 收起）
@@ -1486,13 +1580,27 @@ private fun PlayerMenuSheet(
                         modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 6.dp),
                     )
                 }
-                Row(
+                FlowRow(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 18.dp, vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     PlayQuality.entries.forEach { item ->
+                        // 0) B 站且非大会员：无损 / 全景声无法取到 → 直接不展示（避免误导）
+                        if (song?.platform == MusicPlatform.BB && !biliIsVip &&
+                            (item == PlayQuality.LOSSLESS || item == PlayQuality.ATMOS || item == PlayQuality.FLAC24) &&
+                            item != current
+                        ) {
+                            return@forEach
+                        }
+                        // 1) 确证无资源（酷狗逐档体积 = 0）→ 灰化；
+                        // 2) 超出列表接口标注上限（且非确证）→ 弱化提示，但仍可点。
+                        // 两者都**不禁用**：上限只是下界、且高清档常随歌单/会员变化，
+                        // 硬禁用会让用户彻底失去尝试机会。
+                        val noResource = song?.hasQuality(item) == false
+                        val dimmed = noResource || item.exceedsCeiling(song)
                         val leading: (@Composable () -> Unit)? = if (item == current) {
                             {
                                 Icon(
@@ -1507,10 +1615,29 @@ private fun PlayerMenuSheet(
                         FilterChip(
                             selected = item == current,
                             onClick = { onSelectQuality(item) },
-                            label = { Text(item.label) },
+                            label = { Text(if (noResource) "${item.label} ·无" else item.label) },
                             leadingIcon = leading,
+                            colors = if (dimmed) {
+                                val muted = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                                FilterChipDefaults.filterChipColors(
+                                    labelColor = muted,
+                                    containerColor = Color.Transparent,
+                                    disabledLabelColor = muted,
+                                )
+                            } else {
+                                FilterChipDefaults.filterChipColors()
+                            },
                         )
                     }
+                }
+                // 本曲上限提示：点歌前就知道最高能到哪一档，省掉逐档试错
+                song?.ceilingQuality?.let { ceiling ->
+                    Text(
+                        text = "本曲标注最高可用：${ceiling.label}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 4.dp),
+                    )
                 }
                 Spacer(Modifier.height(8.dp))
                 PlayerMenuItem(

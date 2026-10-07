@@ -1,5 +1,12 @@
 package com.dpmusic.app.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +24,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,11 +43,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dpmusic.app.AppContainer
 import com.dpmusic.app.core.model.CommentItem
+import com.dpmusic.app.core.model.CommentReply
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.util.formatCount
 import com.dpmusic.app.core.util.formatRelativeTime
@@ -165,7 +178,7 @@ fun CommentsSheet(
                         .fillMaxWidth()
                         .height(200.dp),
                 ) {
-                    EmptyState(title = "该平台暂不支持评论", subtitle = "目前支持网易云 / QQ 音乐")
+                    EmptyState(title = "该平台暂不支持评论", subtitle = "目前支持网易云 / QQ 音乐；酷狗评论接口需签名，暂不可用")
                 }
                 hot.isEmpty() && latest.isEmpty() -> Box(
                     modifier = Modifier
@@ -257,56 +270,188 @@ private fun CommentSectionTitle(title: String) {
 
 @Composable
 private fun CommentRow(c: CommentItem) {
-    Row(
+    // 回复默认折叠；展开状态按评论 id 记忆（列表滚动/重排不丢）
+    var repliesExpanded by remember(c.id) { mutableStateOf(false) }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 10.dp),
     ) {
+        Row {
+            CoverArt(
+                url = c.avatarUrl,
+                modifier = Modifier.size(36.dp),
+                shape = CircleShape,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = c.nickname,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = formatRelativeTime(c.timeMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = c.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (c.likedCount > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.ThumbUp,
+                            contentDescription = "点赞",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = formatCount(c.likedCount.toLong()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                // 回复入口（默认折叠）
+                if (c.hasReplies) {
+                    Spacer(Modifier.height(6.dp))
+                    ReplyToggle(
+                        expanded = repliesExpanded,
+                        count = c.displayReplyCount,
+                        onClick = { repliesExpanded = !repliesExpanded },
+                    )
+                }
+            }
+        }
+
+        if (c.hasReplies) {
+            // 缩进对齐到正文起点：头像 36 + 间距 12 = 48
+            RepliesBlock(
+                replies = c.replies,
+                visible = repliesExpanded,
+                modifier = Modifier.padding(start = 48.dp, top = 6.dp),
+            )
+        }
+    }
+}
+
+/** 回复展开/收起入口：「查看 N 条回复」+ 箭头 */
+@Composable
+private fun ReplyToggle(
+    expanded: Boolean,
+    count: Int,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (expanded) "收起回复" else "查看 $count 条回复",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+            contentDescription = if (expanded) "收起回复" else "展开回复",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+/** 回复列表（默认折叠时完全不组合子树，零开销） */
+@Composable
+private fun RepliesBlock(
+    replies: List<CommentReply>,
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = expandVertically(
+            animationSpec = tween(240, easing = FastOutSlowInEasing),
+            expandFrom = Alignment.Top,
+        ) + fadeIn(tween(180, delayMillis = 40)),
+        exit = shrinkVertically(tween(180, easing = FastOutSlowInEasing)) + fadeOut(tween(120)),
+        modifier = modifier,
+    ) {
+        val divider = MaterialTheme.colorScheme.outlineVariant
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // 左侧竖线：把「回复」和「主评论」在视觉上分层
+                .drawBehind {
+                    val x = 1.dp.toPx()
+                    drawLine(
+                        color = divider.copy(alpha = 0.6f),
+                        start = Offset(x, 0f),
+                        end = Offset(x, size.height),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                }
+                .padding(start = 12.dp),
+        ) {
+            replies.forEachIndexed { index, r ->
+                if (index > 0) Spacer(Modifier.height(8.dp))
+                ReplyRow(r)
+            }
+        }
+    }
+}
+
+/** 单条回复：小头像 + 昵称 + 内容（无时间/点赞 —— 网易云 `beReplied` 不含这些字段） */
+@Composable
+private fun ReplyRow(r: CommentReply) {
+    Row(modifier = Modifier.fillMaxWidth()) {
         CoverArt(
-            url = c.avatarUrl,
-            modifier = Modifier.size(36.dp),
+            url = r.avatarUrl,
+            modifier = Modifier.size(24.dp),
             shape = CircleShape,
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = c.nickname,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
+                    text = r.nickname,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = formatRelativeTime(c.timeMs),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = c.content,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (c.likedCount > 0) {
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Outlined.ThumbUp,
-                        contentDescription = "点赞",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
+                // 时间仅在平台确实提供时展示（网易云不提供，timeMs=0）
+                if (r.timeMs > 0L) {
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = formatCount(c.likedCount.toLong()),
+                        text = formatRelativeTime(r.timeMs),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = r.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

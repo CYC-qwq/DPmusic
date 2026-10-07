@@ -7,6 +7,7 @@ import com.dpmusic.app.ui.player.PlayerViewModel
 import com.dpmusic.app.ui.screens.chat.ChatThreadViewModel
 import com.dpmusic.app.ui.screens.chat.ChatViewModel
 import com.dpmusic.app.ui.screens.favorites.FavoritesViewModel
+import com.dpmusic.app.ui.screens.home.PlaybackCastViewModel
 import com.dpmusic.app.ui.screens.playlist.PlaylistDetailViewModel
 import com.dpmusic.app.ui.screens.rank.RankDetailViewModel
 import com.dpmusic.app.ui.screens.rank.RankViewModel
@@ -43,13 +44,15 @@ object AppViewModelFactory : ViewModelProvider.Factory {
                 RecentViewModel(container.history, container.player, container.listeningStats)
 
             modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
-                SettingsViewModel(container.settings, container.player, container.appContext, container.ncm, container.ncmApi, container.qq, container.qqApi)
+                SettingsViewModel(container.settings, container.player, container.appContext, container.ncm, container.ncmApi, container.qq, container.qqApi, container.kgLite, container.kgLiteApi, container.kgLiteLoginApi, container.bili, container.biliPlatformApi)
 
             modelClass.isAssignableFrom(DownloadViewModel::class.java) ->
                 DownloadViewModel(container.musicRepository, container.settings, container.appContext)
 
             modelClass.isAssignableFrom(SyncViewModel::class.java) ->
-                SyncViewModel(container.settings, container.syncManager)
+                SyncViewModel(container.settings, container.syncManager, container.lanSyncManager)
+            modelClass.isAssignableFrom(PlaybackCastViewModel::class.java) ->
+                PlaybackCastViewModel(container.lanSyncManager, container.player)
             modelClass.isAssignableFrom(PlayerViewModel::class.java) ->
                 PlayerViewModel(
                     container.musicRepository,
@@ -68,11 +71,11 @@ object AppViewModelFactory : ViewModelProvider.Factory {
             modelClass.isAssignableFrom(SourceManagerViewModel::class.java) ->
                 SourceManagerViewModel(
                     repository = container.userApi,
-                    engine = container.userApiEngine,
                     settings = container.settings,
                     plugins = container.musicFreePlugins,
-                    pluginEngine = container.musicFreeEngine,
                     music = container.musicRepository,
+                    scriptPool = container.scriptPool,
+                    pluginPool = container.pluginPool,
                 )
 
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

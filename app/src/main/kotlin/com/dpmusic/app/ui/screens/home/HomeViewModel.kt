@@ -3,6 +3,7 @@ package com.dpmusic.app.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dpmusic.app.AppContainer
+import com.dpmusic.app.core.data.enabledPlatforms
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.NcmPlaylist
 import com.dpmusic.app.core.model.QqPlaylist
@@ -11,6 +12,7 @@ import com.dpmusic.app.core.model.Song
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -76,7 +78,13 @@ class HomeViewModel : ViewModel() {
     val ncmMessage = _ncmMessage.asStateFlow()
 
     init {
-        loadToplists()
+        // 榜单只拉取**已启用**的平台；开关变化时自动重载（关掉的平台不再联网、也不出现在分段里）
+        viewModelScope.launch {
+            AppContainer.settings.settings
+                .map { it.enabledPlatforms() }
+                .distinctUntilChanged()
+                .collect { loadToplists() }
+        }
         viewModelScope.launch {
             ncm.cookie.collect { cookie ->
                 if (cookie.isNotBlank()) {
@@ -153,12 +161,12 @@ class HomeViewModel : ViewModel() {
     }
 
     fun loadToplists() {
-        if (_toplistsLoading.value) return
+        val platforms = AppContainer.settings.settings.value.enabledPlatforms()
         viewModelScope.launch {
             _toplistsLoading.value = true
             try {
                 val result = mutableMapOf<MusicPlatform, List<RankSummary>>()
-                MusicPlatform.entries.forEach { platform ->
+                platforms.forEach { platform ->
                     runCatching { repository.toplists(platform) }
                         .onSuccess { result[platform] = it.take(4) }
                 }
@@ -175,6 +183,28 @@ class HomeViewModel : ViewModel() {
         val first = recent.value.firstOrNull() ?: return
         player.playQueue(listOf(first.song), 0)
     }
+
+    /**
+     * 「继续收听」卡片的**统一点击入口**：
+     *
+     * - 若该曲**就是当前正在播放的那首** → 切换播放/暂停（与迷你播放条行为一致）；
+     * - 否则 → 起播（恢复上次会话 / 从最近一首重开）。
+     *
+     * 之所以要分流：卡片展示的是「最近播放」，而它可能正插在播放队列里播着。
+     * 此时再点「播放」若走 `resumeRecent()` 会**从头重开**，与用户预期相反
+     * （他想要的是暂停）。
+     */
+    fun toggleOrResume(song: Song) {
+        val current = player.nowPlaying.value
+        if (current != null && current.song.stableKey == song.stableKey) {
+            player.togglePlayPause()
+        } else {
+            resumeRecent()
+        }
+    }
+
+    /** 播放/暂停（与迷你播放条同一动作） */
+    fun togglePlay() = player.togglePlayPause()
 
     /** 单曲播放（热榜点击场景外部处理队列，这里用于继续收听） */
     fun playSong(song: Song) {

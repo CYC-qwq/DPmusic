@@ -85,26 +85,6 @@ fun Modifier.staggeredEntrance(index: Int, enabled: Boolean = true): Modifier {
     }
 }
 
-/** 区块标题（8dp 网格对齐） */
-@Composable
-fun SectionHeader(
-    title: String,
-    modifier: Modifier = Modifier,
-    subtitle: String? = null,
-) {
-    Column(modifier = modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Text(text = title, style = MaterialTheme.typography.titleLarge)
-        if (!subtitle.isNullOrBlank()) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
 /** 胶囊按钮（大圆角 + 涟漪 + 按压回弹） */
 @Composable
 fun PillButton(

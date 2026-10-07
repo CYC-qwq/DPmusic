@@ -14,6 +14,16 @@ navigation = "2.9.5"
 datastore = "1.1.7"
 palette = "1.0.0"
 materialIcons = "1.7.8"
+# 小米 HyperOS 超级岛（focus-api 构建通知载荷；Shizuku + hiddenapibypass 供断网魔法）
+shizuku = "13.1.5"
+hiddenApiBypass = "6.1"
+focusApi = "1.4"
+# 局域网设备同步：内嵌 HTTP 服务器（LocalSend 风格 REST API；自包含、无额外传递依赖）
+nanohttpd = "2.3.1"
+# 单元测试：协议编解码与服务端路由（纯 JVM，不依赖设备）
+junit = "4.13.2"
+# 汽水登录：WebViewAssetLoader 提供 https 源（ES module 需要安全上下文）
+webkit = "1.14.0"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -50,3 +60,18 @@ media3-datasource-okhttp = { group = "androidx.media3", name = "media3-datasourc
 media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+
+# 小米 HyperOS 超级岛：focus-api 负责构建 miui.focus.* 通知载荷；
+# Shizuku + hiddenapibypass 供「断网魔法」绕过 XMSF 签名校验（详见 core/miisland）。
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
+hiddenapibypass = { group = "org.lsposed.hiddenapibypass", name = "hiddenapibypass", version.ref = "hiddenApiBypass" }
+focus-api = { group = "com.xzakota.hyper.notification", name = "focus-api", version.ref = "focusApi" }
+
+# 局域网设备同步：内嵌 HTTP 服务器（见 core/lansync）
+nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
+# 汽水登录宿主页：WebViewAssetLoader（https 源，供 ES module）
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
+
+# 单元测试（纯 JVM）
+junit = { group = "junit", name = "junit", version.ref = "junit" }

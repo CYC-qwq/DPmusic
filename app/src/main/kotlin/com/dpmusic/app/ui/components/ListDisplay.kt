@@ -14,6 +14,8 @@ data class ListDisplayOptions(
     val showCover: Boolean = true,
     /** 显示平台来源徽标 */
     val showSource: Boolean = true,
+    /** 显示最高可用音质徽标（数据来自列表接口元数据，不发额外请求） */
+    val showQuality: Boolean = true,
 )
 
 /** 列表显示开关（默认全开；设置页可关） */

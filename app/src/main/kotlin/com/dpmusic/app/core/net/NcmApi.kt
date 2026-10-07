@@ -5,7 +5,9 @@ import com.dpmusic.app.core.model.ArtistDetail
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.NcmPlaylist
 import com.dpmusic.app.core.model.NcmProfile
+import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.Song
+import com.dpmusic.app.core.model.qualityFromMaxLevel
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -388,6 +390,19 @@ class NcmApi(private val deviceIdProvider: () -> String) {
             album = albumObj?.str("name").orEmpty(),
             durationMs = long("dt") ?: long("duration") ?: 0L,
             coverUrl = cover.orEmpty().toHttps(),
+            // 每日推荐 / 私人FM 的条目通常只有 l/m/h 三档对象、无 privilege：
+            // 按实际存在的最高音质对象推断（缺字段则空串，UI 不展示徽标）。
+            maxQuality = run {
+                fun has(key: String): Boolean = (objOrNull(key)?.long("br") ?: 0L) > 0L
+                qualityFromMaxLevel(objOrNull("privilege")?.str("maxBrLevel"))?.id
+                    ?: when {
+                        has("hr") -> PlayQuality.HIRES.id
+                        has("sq") -> PlayQuality.LOSSLESS.id
+                        has("h") -> PlayQuality.HIGH.id
+                        has("l") -> PlayQuality.STANDARD.id
+                        else -> ""
+                    }
+            },
             extra = buildMap {
                 artistArr?.firstOrNull()?.long("id")?.toString()?.let { put("wy_artist_id", it) }
                 albumObj?.long("id")?.toString()?.let { put("wy_album_id", it) }

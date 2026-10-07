@@ -3,12 +3,15 @@ package com.dpmusic.app.core.net
 import com.dpmusic.app.core.lyric.LrcParser
 import com.dpmusic.app.core.lyric.YrcParser
 import com.dpmusic.app.core.model.CommentItem
+import com.dpmusic.app.core.model.CommentReply
 import com.dpmusic.app.core.model.CommentsPage
 import com.dpmusic.app.core.model.MusicPlatform
+import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.PlaylistSummary
 import com.dpmusic.app.core.model.RankSummary
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.model.SongLyrics
+import com.dpmusic.app.core.model.qualityFromMaxLevel
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -289,8 +292,28 @@ class WyApi : PlatformApi {
         )
         val json = parseJsonPayload(raw)
         if ((json.int("code") ?: 0) != 200) return null
+
+        /**
+         * 解析单条回复（网易云 `beReplied[]`）。
+         * ⚠️ `beReplied` 对象**没有 `time` 字段**（实测），故 timeMs = 0。
+         */
+        fun parseReply(r: JsonElement): CommentReply? {
+            val content = r.str("content")?.takeIf { it.isNotBlank() } ?: return null
+            val user = r.objOrNull("user")
+            return CommentReply(
+                id = r.long("beRepliedCommentId")?.toString().orEmpty(),
+                nickname = user?.str("nickname").orEmpty(),
+                avatarUrl = user?.str("avatarUrl").orEmpty().toHttps(),
+                content = content,
+            )
+        }
+
         fun parseList(arr: List<JsonElement>?): List<CommentItem> = arr?.mapNotNull { c ->
             val content = c.str("content")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            // 楼中楼：`beReplied` 是被回复的那一条（实测每条最多 1 个元素）
+            val replies = c.arrOrNull("beReplied")
+                ?.mapNotNull { parseReply(it) }
+                .orEmpty()
             CommentItem(
                 id = c.long("commentId")?.toString().orEmpty(),
                 nickname = c.objOrNull("user")?.str("nickname").orEmpty(),
@@ -298,6 +321,9 @@ class WyApi : PlatformApi {
                 content = content,
                 likedCount = c.int("likedCount") ?: 0,
                 timeMs = c.long("time") ?: 0L,
+                replies = replies,
+                // 网易云评论列表未提供回复总数，交由 UI 按 replies 实际条数展示
+                replyCount = 0,
             )
         } ?: emptyList()
         val hot = parseList(json.arrOrNull("hotComments"))
@@ -326,11 +352,30 @@ class WyApi : PlatformApi {
             album = albumObj?.str("name").orEmpty(),
             durationMs = long("dt") ?: 0L,
             coverUrl = albumObj?.str("picUrl").orEmpty().toHttps(),
+            maxQuality = wyMaxQuality(this),
             extra = buildMap {
                 artistArr?.firstOrNull()?.long("id")?.toString()?.let { put("wy_artist_id", it) }
                 albumObj?.long("id")?.toString()?.let { put("wy_album_id", it) }
             },
         )
+    }
+
+    /**
+     * 从列表接口元数据推断该曲最高可用档位（**不发额外请求**）。
+     *
+     * 首选 `privilege.maxBrLevel`（实测取值：standard / higher / exhigh / lossless / hires）；
+     * 缺失时回退到 `hr` / `sq` / `h` 音质对象的 `br` 字段判断。
+     */
+    private fun wyMaxQuality(el: JsonElement): String {
+        qualityFromMaxLevel(el.objOrNull("privilege")?.str("maxBrLevel"))?.let { return it.id }
+        fun has(key: String): Boolean = (el.objOrNull(key)?.long("br") ?: 0L) > 0L
+        return when {
+            has("hr") -> PlayQuality.HIRES
+            has("sq") -> PlayQuality.LOSSLESS
+            has("h") -> PlayQuality.HIGH
+            has("l") -> PlayQuality.STANDARD
+            else -> null
+        }?.id.orEmpty()
     }
 
     companion object {

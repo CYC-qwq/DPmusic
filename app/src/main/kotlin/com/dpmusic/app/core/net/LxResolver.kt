@@ -44,6 +44,14 @@ data class ResolvedUrl(val url: String, val qualityId: String)
  */
 class LxResolver(private val apiKeyProvider: () -> String) {
 
+    /**
+     * Key 是否已配置。
+     *
+     * 供解析链路判断「Key 引擎这一环节能不能参与」—— 没配 Key 时应**静默跳过**，
+     * 而不是发一次必然失败的请求、再给用户抛一个误导性的「解析失败」。
+     */
+    fun isConfigured(): Boolean = apiKeyProvider().isNotBlank()
+
     private val breakers: Map<MusicPlatform, CircuitBreaker> =
         MusicPlatform.entries.associateWith { CircuitBreaker() }
 

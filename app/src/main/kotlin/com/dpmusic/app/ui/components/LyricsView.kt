@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -54,15 +57,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import com.dpmusic.app.core.lyric.withSimulatedVerbatim
 import com.dpmusic.app.core.model.LyricLine
 import com.dpmusic.app.core.model.LyricWord
+import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.SongLyrics
 import com.dpmusic.app.core.playback.PlayerConnection
 import kotlin.math.abs
@@ -104,6 +113,9 @@ fun LyricsView(
     }
     val listState = rememberLazyListState()
     val currentIndex = remember(displayLyrics, positionMs) { findCurrentLine(displayLyrics.lines, positionMs) }
+
+    // 每行字号自适应用的测量器：整个歌词视图共用一个实例（内部带布局缓存）
+    val measurer = rememberTextMeasurer()
 
     // 自动跟随开关：拖动中暂停；松手 4s 后恢复（期间再次拖动则重新计时）
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
@@ -152,6 +164,16 @@ fun LyricsView(
         val topPadding = (anchor - 35.dp).coerceAtLeast(24.dp)
         val bottomPadding = (viewportHeight - topPadding).coerceAtLeast(24.dp)
 
+        // 行的横向换行约束：视口宽 - 两侧留白（点击框留白 + 换行留白）。
+        // 传下行项，让「点击框包住文字」的同时，长句换行位置与改动前一致。
+        val lineMaxWidth = (
+            maxWidth - (LYRIC_HIT_PADDING_H + if (compact) {
+                LYRIC_WRAP_PADDING_H_COMPACT
+            } else {
+                LYRIC_WRAP_PADDING_H
+            }) * 2
+            ).coerceAtLeast(120.dp)
+
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -178,8 +200,21 @@ fun LyricsView(
                     },
                     fontScale = fontScale,
                     spacingScale = spacingScale,
+                    maxLineWidth = lineMaxWidth,
+                    measurer = measurer,
                 )
             }
+        }
+
+        // 跨平台兜底提示：固定在歌词区顶部（不随滚动消失），
+        // 告知用户「这份歌词不是本平台提供的」，不冒充原平台。
+        if (displayLyrics.isCrossPlatform) {
+            CrossPlatformLyricBadge(
+                sourcePlatform = displayLyrics.sourcePlatform!!,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp),
+            )
         }
 
         // 歌词样式调节：右下角小按钮常驻（点击展开 / 收起），面板在按钮上方弹出
@@ -243,6 +278,47 @@ fun LyricsView(
     }
 }
 
+/**
+ * 跨平台歌词来源提示。
+ *
+ * 为什么需要它：本平台没有歌词时，我们会去别的平台兜一份回来（见
+ * `MusicRepository.lyrics`）。但「从 QQ 音乐拿网易云的歌的歌词」是用户
+ * 未必预期的事 —— 直接显示会让人以为原平台本来就有。这里明确标注来源，
+ * 把选择权交回用户（不满意可关掉对应音源开关）。
+ *
+ * 只做「告知」，不做「操作」：不放跳转按钮，避免把歌词区变成导航入口。
+ */
+@Composable
+private fun CrossPlatformLyricBadge(
+    sourcePlatform: MusicPlatform,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f),
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 小圆点用平台品牌色：比纯文字更快让人意识到「来源变了」
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(Color(sourcePlatform.brandColor), RoundedCornerShape(50)),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "歌词来自 ${sourcePlatform.label}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun LyricLineItem(
     line: LyricLine,
@@ -255,6 +331,10 @@ private fun LyricLineItem(
     onClick: () -> Unit,
     fontScale: Float,
     spacingScale: Float,
+    /** 行的横向换行约束（由宿主按视口宽算出；不参与点击命中，见下方 modifier 顺序） */
+    maxLineWidth: Dp,
+    /** 每行字号自适应用的测量器（跨行复用同一实例 → 共享布局缓存） */
+    measurer: TextMeasurer,
 ) {
     val springSpec = spring<Float>(
         dampingRatio = Spring.DampingRatioNoBouncy,
@@ -280,9 +360,38 @@ private fun LyricLineItem(
         label = "lyricColor",
     )
 
+    val wrapPadding = if (compact) LYRIC_WRAP_PADDING_H_COMPACT else LYRIC_WRAP_PADDING_H
+
+    // 每行字号自适应：短行放大、长行缩小，让整行尽量落在 [LYRIC_AUTOSIZE_MAX_LINES] 行内。
+    // 注意**不缩放行高** —— 行高保持主题值、与字号无关，于是整屏的行间距恒定，
+    // 不会因为这一行「字大 / 字小」而把上下行推来推去。
+    val themeStyle = if (compact) {
+        MaterialTheme.typography.bodyLarge
+    } else {
+        MaterialTheme.typography.titleMedium
+    }
+    val autoSize = rememberAutoSizeLyricFontSize(
+        measurer = measurer,
+        text = remember(line) { lyricTextForMeasure(line) },
+        baseStyle = themeStyle,
+        fontScale = fontScale,
+        maxLineWidth = maxLineWidth,
+    )
+    val lineStyle = themeStyle.copy(fontSize = autoSize)
+
+    // 顺序（自外向内，决定「谁包住谁」）：
+    //   wrapContentWidth → 外层不再强制满宽，行项包裹内容
+    //   graphicsLayer    → 高亮缩放（放在点击框以内，动画不影响命中区）
+    //   clickable        → 点击框（此时"内容"= 下方 widthIn 定出的文本块）
+    //   padding(HIT)     → 点击框相对文字外扩这点留白
+    //   widthIn          → 换行宽度约束（不参与命中）
+    //   padding(WRAP)。
+    //
+    // 关键点：原实现在最外层用 fillMaxWidth()，点击框就横跨整屏 ——
+    // 点歌词左右两侧的空白也会 seek。这里换成「点击框只包住文字」。
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .wrapContentWidth()
             .graphicsLayer {
                 this.alpha = alpha
                 scaleX = scale
@@ -302,9 +411,11 @@ private fun LyricLineItem(
                 },
             )
             .padding(
-                horizontal = if (compact) 32.dp else 40.dp,
+                horizontal = LYRIC_HIT_PADDING_H,
                 vertical = (if (compact) 6.dp else 10.dp) * spacingScale,
-            ),
+            )
+            .widthIn(max = maxLineWidth)
+            .padding(horizontal = wrapPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         if (verbatim && isActive && line.words.isNotEmpty()) {
@@ -324,26 +435,22 @@ private fun LyricLineItem(
             LyricWordsFlow(
                 words = line.words,
                 smoothPositionMs = smoothPos.value,
-                baseStyle = scaleLyricStyle(
-                    if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium,
-                    fontScale,
-                ),
+                baseStyle = lineStyle,
                 highlightColor = MaterialTheme.colorScheme.primary,
                 dimColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             Text(
                 text = line.text,
-                style = scaleLyricStyle(
-                    if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium,
-                    fontScale,
-                ),
+                style = lineStyle,
                 fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
                 color = color,
                 textAlign = TextAlign.Center,
             )
         }
         if (!line.translation.isNullOrBlank()) {
+            // 译文行不做自适应：它本来就用更小的固定字号，跟着正文缩放反而会
+            // 在「大字行」下变得和正文一样大、抢戏。
             Spacer(Modifier.height(2.dp))
             Text(
                 text = line.translation,
@@ -468,6 +575,102 @@ private fun scaleLyricStyle(style: TextStyle, scale: Float): TextStyle {
     )
 }
 
+/**
+ * 按**绝对倍数**缩放字号（与 [scaleLyricStyle] 的区别：这里只缩放字体，不动行高）。
+ *
+ * 回调侧传 `1f` 表示「未手动调过」→ 直接沿用主题字号，不做任何 em 换算，
+ * 避免无谓的 `TextUnit` 重建。
+ */
+private fun lyricFontSize(base: TextStyle, fontScale: Float): TextUnit {
+    val size = base.fontSize
+    if (fontScale == 1f || size == TextUnit.Unspecified) return size
+    return size * fontScale
+}
+
+/**
+ * 测量用文本。
+ *
+ * 有字级数据（含 [withSimulatedVerbatim] 补出来的模拟字）时，逐字路径是 FlowRow
+ * 拼接各个 `word.text`，与整行 `Text(line.text)` 的断行位置**不完全一致**
+ * （FlowRow 不合并字距、断行只发生在 word 之间）。所以测量时也按同样的方式拼接，
+ * 让两条渲染路径共用同一套换行假设 —— 否则自动字号会在两套布局间「估错」。
+ */
+private fun lyricTextForMeasure(line: LyricLine): String =
+    if (line.words.isNotEmpty()) line.words.joinToString("") { it.text } else line.text
+
+/**
+ * 每行字号自适应：**字号恒定（不按行高缩放，垂直节奏统一）**，但把短行放大、长行缩小，
+ * 使整行尽量落在 [maxLineWidth] 的 *[LYRIC_AUTOSIZE_MAX_LINES] 行* 以内。
+ *
+ * 为什么要自适应（而不是固定字号）：固定字号下短句只占屏幕一小段、长句要换三行，
+ * 视觉上「一行一个大小」，阅读节奏被切碎。
+ *
+ * 算法：先按主题字号 × `fontScale` 测一次；溢出才二分收缩，没溢出则二分放大
+ * （上限 [LYRIC_AUTOSIZE_MAX_GROWTH]）。两条路径都是「离线测量」——
+ * [androidx.compose.ui.text.TextMeasurer] 会缓存布局结果，每行只在文本 / 宽度 /
+ * 字号变化时重算一次，正常滚动命中缓存。
+ *
+ * 返回值：恒为**绝对值**（不是字号的倍数），可直接塞进 `TextStyle.fontSize`。
+ */
+@Composable
+private fun rememberAutoSizeLyricFontSize(
+    measurer: TextMeasurer,
+    text: String,
+    baseStyle: TextStyle,
+    fontScale: Float,
+    maxLineWidth: Dp,
+): TextUnit {
+    val density = LocalDensity.current
+    return remember(measurer, text, baseStyle, fontScale, maxLineWidth, density) {
+        val base = lyricFontSize(baseStyle, fontScale)
+        if (base == TextUnit.Unspecified || text.isBlank()) return@remember base
+
+        val widthPx = with(density) {
+            (maxLineWidth * LYRIC_AUTOSIZE_WIDTH_SAFETY).toPx()
+        }.toInt()
+        if (widthPx <= 0) return@remember base
+
+        // 判据必须用 **lineCount**（与实际字号无关），不能用「高度 ≤ 单行高度 × N」：
+        // 放大字号会等比放大行高，那样连「确实只有一行」都会被误判成溢出，
+        // 结果所有行都退化成缩小分支。
+        val fits = { fs: TextUnit ->
+            measurer.measure(
+                text = text,
+                style = baseStyle.copy(fontSize = fs),
+                constraints = Constraints(maxWidth = widthPx),
+            ).lineCount <= LYRIC_AUTOSIZE_MAX_LINES
+        }
+
+        if (fits(base)) {
+            // 没溢出 → 放大到「刚好还是 N 行」的最大字号
+            var lo = base.value
+            var hi = base.value * LYRIC_AUTOSIZE_MAX_GROWTH
+            if (fits(base * LYRIC_AUTOSIZE_MAX_GROWTH)) {
+                lo = hi
+            } else {
+                repeat(LYRIC_AUTOSIZE_SEARCH_STEPS) {
+                    val mid = (lo + hi) / 2f
+                    if (fits(base * (mid / base.value))) lo = mid else hi = mid
+                }
+            }
+            base * (lo / base.value)
+        } else {
+            // 溢出 → 收缩到「刚好落下」的最大字号，但不小于下限
+            var lo = base.value * LYRIC_AUTOSIZE_MIN_SHRINK
+            var hi = base.value
+            if (!fits(base * LYRIC_AUTOSIZE_MIN_SHRINK)) {
+                // 连下限都放不下：就用下限（继续换行，不再缩）
+                return@remember base * LYRIC_AUTOSIZE_MIN_SHRINK
+            }
+            repeat(LYRIC_AUTOSIZE_SEARCH_STEPS) {
+                val mid = (lo + hi) / 2f
+                if (fits(base * (mid / base.value))) lo = mid else hi = mid
+            }
+            base * (lo / base.value)
+        }
+    }
+}
+
 /* ---------------- 歌词字号 / 行距调节胶囊 ---------------- */
 
 private const val LYRIC_SCALE_MIN = 0.75f
@@ -476,6 +679,56 @@ private const val LYRIC_SCALE_STEP = 0.1f
 private const val LYRIC_SPACING_MIN = 0.5f
 private const val LYRIC_SPACING_MAX = 2f
 private const val LYRIC_SPACING_STEP = 0.1f
+
+/**
+ * 歌词行**点击框**相对文字边缘的横向留白。
+ *
+ * 原来行项是 `fillMaxWidth()`，点击框横跨整个屏幕宽度 —— 点歌词左右两侧的空白处
+ * 也会 seek 到该行，手感「框比字大得多」。改成让点击框只包住文字本身（+ 这点留白）。
+ */
+private val LYRIC_HIT_PADDING_H = 10.dp
+
+/**
+ * 歌词行横向「换行宽度」约束（不参与点击，见 [LyricLineItem] 的 modifier 顺序）。
+ *
+ * `LYRIC_HIT_PADDING_H + 此值` 等于改动前的横向 padding（32dp / 40dp），
+ * 因此长句的**换行位置与改动前完全一致**，只是点击框收窄到文字附近。
+ */
+private val LYRIC_WRAP_PADDING_H = 30.dp
+private val LYRIC_WRAP_PADDING_H_COMPACT = 22.dp
+
+/* ---------------- 每行字号自适应 ---------------- */
+
+/** 自适应时允许占用的最大行数：**1 行** —— 让每行都力争一行放下，长句自动缩小而不是折行 */
+private const val LYRIC_AUTOSIZE_MAX_LINES = 1
+
+/**
+ * 相对主题字号的**放大上限**（短句最多放大到几倍）。
+ *
+ * ⚠️ 这个值本质上就是「整首歌的字号」：本机 438dp 视口下基础 16sp 一行已能放下约 21 个
+ * 汉字，实测 17 行真实歌词里有 13 行不受行长约束、直接顶到本上限。设 1f = 只缩不放。
+ * 所以它是一次性的整体观感选择，而不是「自适应强度」。
+ */
+private const val LYRIC_AUTOSIZE_MAX_GROWTH = 1.25f
+
+/**
+ * 相对主题字号的**缩小下限**（超长句最多缩到几倍）。
+ *
+ * 实测 27 字的超长行会缩到 ~0.80×（落在下限附近）；再长的行不再继续缩，改为折行 ——
+ * 否则字号会小到读不清，得不偿失。
+ */
+private const val LYRIC_AUTOSIZE_MIN_SHRINK = 0.80f
+
+/**
+ * 测量宽度安全系数。
+ *
+ * 两个来源：当前行有 1.04 的高亮缩放（视觉上更宽），以及逐字路径用 FlowRow
+ * 换行、与 Text 的原生断行略有差异。留 4% 余量，避免「刚好放满」的行被挤出去。
+ */
+private const val LYRIC_AUTOSIZE_WIDTH_SAFETY = 0.96f
+
+/** 二分搜索步数（8 步把区间细分到 1/256，精度远高于肉眼可辨） */
+private const val LYRIC_AUTOSIZE_SEARCH_STEPS = 8
 
 /** 歌词字号 / 行距调节：右下角悬浮胶囊（− 字号 ＋ / − 行距 ＋）；横竖屏分别记忆由宿主负责 */
 @Composable

@@ -33,6 +33,12 @@ object PlaylistLinkParser {
         Regex("""kugou\.com/\S*?[?&]specialid=(\d+)"""),
     )
 
+    private val QS_PATTERNS = listOf(
+        // https://www.douyin.com/qishui/playlist/7618519056723099657
+        Regex("""douyin\.com/\S*?/playlist/(\d+)"""),
+        Regex("""douyin\.com/\S*?[?&]playlist_id=(\d+)"""),
+    )
+
     private val PURE_ID = Regex("""^\d{3,}$""")
 
     /** 解析候选列表：链接 → 单一明确平台；纯数字 → 三平台候选；否则空 */
@@ -48,6 +54,9 @@ object PlaylistLinkParser {
         }
         KG_PATTERNS.firstNotNullOfOrNull { it.find(text) }?.let {
             return listOf(ParsedPlaylistLink(MusicPlatform.KG, it.groupValues[1]))
+        }
+        QS_PATTERNS.firstNotNullOfOrNull { it.find(text) }?.let {
+            return listOf(ParsedPlaylistLink(MusicPlatform.QS, it.groupValues[1]))
         }
 
         // 纯数字：无法从格式识别平台 → 依次尝试三平台（自动匹配）

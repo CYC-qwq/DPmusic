@@ -59,13 +59,19 @@ object Http {
         }
     }
 
+    /**
+     * JSON 提交。
+     * @param retryOnFailure 弱网是否自动重试；对有副作用的接口（如发送短信验证码）应传 false，
+     *                       避免超时重试导致重复发送。
+     */
     suspend fun postJson(
         url: String,
         jsonBody: String,
         referer: String? = null,
         headers: Map<String, String> = emptyMap(),
+        retryOnFailure: Boolean = true,
     ): String = withContext(Dispatchers.IO) {
-        retry {
+        val block: () -> String = {
             val builder = Request.Builder()
                 .url(url)
                 .post(jsonBody.toRequestBody(JSON_MEDIA))
@@ -77,6 +83,7 @@ object Http {
                 resp.body?.string().orEmpty()
             }
         }
+        if (retryOnFailure) retry { block() } else block()
     }
 
     /** 表单提交（application/x-www-form-urlencoded）：供听歌识曲 / 网易云 eapi 等接口复用（headers 可覆盖默认 UA） */
@@ -119,6 +126,44 @@ object Http {
                 if (!resp.isSuccessful) throw HttpException(resp.code, url, "HTTP ${resp.code}")
                 resp.body?.string().orEmpty()
             }
+        }
+    }
+
+    /**
+     * GET 且**保留响应头**：供需要读取 `Set-Cookie` 的接口（如汽水扫码登录取 csrf）。
+     * 不做自动重试（登录流程不宜重试副作用请求）。
+     */
+    suspend fun getWithHeaders(
+        url: String,
+        referer: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): HttpResult = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url(url).header("User-Agent", DEFAULT_UA)
+        referer?.let { builder.header("Referer", it) }
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        client.newCall(builder.build()).execute().use { resp ->
+            HttpResult(resp.body?.string().orEmpty(), resp.headers.toMultimap())
+        }
+    }
+
+    /**
+     * 表单提交且**保留响应头**：供汽水扫码轮询读取 `Set-Cookie` 里的 `sessionid`。
+     * 不做自动重试。
+     */
+    suspend fun postFormWithHeaders(
+        url: String,
+        form: Map<String, String>,
+        referer: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): HttpResult = withContext(Dispatchers.IO) {
+        val body = FormBody.Builder()
+            .apply { form.forEach { (k, v) -> add(k, v) } }
+            .build()
+        val builder = Request.Builder().url(url).post(body).header("User-Agent", DEFAULT_UA)
+        referer?.let { builder.header("Referer", it) }
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        client.newCall(builder.build()).execute().use { resp ->
+            HttpResult(resp.body?.string().orEmpty(), resp.headers.toMultimap())
         }
     }
 

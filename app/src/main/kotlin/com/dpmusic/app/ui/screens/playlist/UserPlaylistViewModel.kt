@@ -378,6 +378,8 @@ class UserPlaylistViewModel : ViewModel() {
         MusicPlatform.WY -> "https://music.163.com/playlist?id=$playlistId"
         MusicPlatform.QQ -> "https://y.qq.com/n/ryqq/playlist/$playlistId"
         MusicPlatform.KG -> "https://www.kugou.com/yy/special/single/$playlistId.html"
+        MusicPlatform.QS -> "https://www.douyin.com/qishui/playlist/$playlistId"
+        MusicPlatform.BB -> "https://www.bilibili.com/medialist/detail/ml$playlistId"
     }
 
     /* ---------------- 歌单内播放 ---------------- */

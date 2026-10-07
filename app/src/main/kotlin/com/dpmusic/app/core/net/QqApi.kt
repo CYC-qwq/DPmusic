@@ -9,6 +9,7 @@ import com.dpmusic.app.core.lyric.QrcParser
 import com.dpmusic.app.core.model.CommentItem
 import com.dpmusic.app.core.model.CommentsPage
 import com.dpmusic.app.core.model.MusicPlatform
+import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.PlaylistSummary
 import com.dpmusic.app.core.model.QqPlaylist
 import com.dpmusic.app.core.model.QqProfile
@@ -330,14 +331,25 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
 
     /** 歌曲评论：global_comment_h5（热门 + 最新，分页） */
     override suspend fun comments(songId: String, page: Int, limit: Int): CommentsPage? {
+        // ⚠️ 关键：该接口的 `topid` 必须传**数字 songId**，传 MID 会稳定返回
+        // total=0 / commentlist=null（静默空结果，不报错）。
+        // 实测：mid=0039MnYb0qxYhV → 数字 id=97773 后 total=230665 正常返回。
+        val numericId = resolveNumericSongId(songId) ?: return null
         val pagenum = (page - 1).coerceAtLeast(0)
         val raw = Http.get(
             "https://c.y.qq.com/base/fcgi-bin/fcg_global_comment_h5.fcg" +
-                "?biztype=1&topid=${urlEnc(songId)}&cmd=8&pagenum=$pagenum&pagesize=$limit&format=json",
+                "?biztype=1&topid=$numericId&cmd=8&pagenum=$pagenum&pagesize=$limit&format=json" +
+                "&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0",
             referer = "https://y.qq.com/n/ryqq/songDetail/$songId",
         )
         val json = parseJsonPayload(raw)
         if ((json.int("code") ?: 0) != 0) return null
+
+        /**
+         * 解析单条评论。
+         * ⚠️ QQ 评论接口**不返回回复数据**（字段里没有 commentcount / replylist），
+         * 故 [CommentItem.replies] 恒为空；`cmd=9` 是「热评流」而非楼中楼，不使用。
+         */
         fun parseList(arr: List<JsonElement>?): List<CommentItem> = arr?.mapNotNull { c ->
             val content = c.str("rootcommentcontent")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             CommentItem(
@@ -357,6 +369,18 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
             total = json.objOrNull("comment")?.int("commenttotal") ?: 0,
             hasMore = (json.int("morecomment") ?: 0) != 0,
         )
+    }
+
+    /**
+     * 把 MID 解析成数字 songId（评论接口必需）。
+     *
+     * - 纯数字 id → 原样返回（省一次网络请求）；
+     * - 否则走 `music.trackInfo.UniformRuleCtrl`（匿名可调，无需 Cookie）。
+     */
+    private suspend fun resolveNumericSongId(id: String): String? {
+        if (id.isBlank()) return null
+        if (id.all { it.isDigit() }) return id
+        return runCatching { songIdsByMids("", listOf(id))[id]?.toString() }.getOrNull()
     }
 
 
@@ -588,8 +612,25 @@ class QqApi(private val cookieProvider: () -> String = { "" }) : PlatformApi {
             album = albumObj?.str("name") ?: str("albumname").orEmpty(),
             durationMs = (int("interval") ?: 0).toLong() * 1000L,
             coverUrl = qqCover(albumMid),
+            maxQuality = qqMaxQuality(this),
         )
     }
+
+    /**
+     * 从列表接口元数据推断该曲最高可用档位（**不发额外请求**）。
+     *
+     * 实测（2026-10-01）同一份「可用体积」在两处接口里的**形态不同**：
+     * - 搜索 `client_search_cp`（带 `lossless=1`）、歌单 `music.srfDissInfo.aiDissInfo`（musicu）：
+     *   体积嵌在 `file` 对象里，键名带下划线（`size_hires` / `size_flac` / `size_ape` / `size_320` / `size_128`）；
+     * - 榜单 `fcg_v8_toplist_cp.fcg`：**没有 `file` 对象**，体积平铺在歌曲对象上，
+     *   键名不带下划线（`sizeflac` / `sizeape` / `size320` / `size128`）。
+     *
+     * 早期只认第一种形态，于是榜单来源的歌曲永远拿不到徽标 —— 明明 `sizeflac` 有值。
+     *
+     * Atmos / Atmos+ 无对应 size 字段（`size_atmos` 实测恒 0），榜单的 `size5_1` 也不在
+     * 档位链上，因此上限会被低估 —— 徽标是「至少能到这一档」的下界。
+     */
+    private fun qqMaxQuality(el: JsonElement): String = qqMaxQualityOf(el)
 
     private fun JsonElement.toPlaylist(): PlaylistSummary? {
         val id = str("dissid") ?: return null
@@ -641,4 +682,39 @@ internal fun String.decodeHtmlEntities(): String {
         m.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: m.value
     }
     return s
+}
+
+
+/**
+ * QQ 列表接口 → 最高可用音质档位（**纯映射，便于单测**）。
+ *
+ * 同一份「可用体积」在 QQ 的两个接口族里形态不同，这里同时兼容：
+ *
+ * | 来源 | 形态 | 键名 |
+ * |---|---|---|
+ * | 搜索 / 歌单（musicu） | 嵌套 `file` 对象 | `size_hires` / `size_flac` / `size_ape` / `size_320` / `size_128` |
+ * | 榜单 `fcg_v8_toplist_cp` | 平铺在歌曲对象上 | `sizeflac` / `sizeape` / `size320` / `size128` |
+ *
+ * 早期只认第一种，导致**榜单来源的歌曲永远没有音质徽标**（明明 `sizeflac` 有值）。
+ *
+ * 返回空串 = 接口没给任何可用体积信息（UI 不展示徽标）；不代表「没有无损」，
+ * 只代表**这份响应里没有线索**。
+ */
+internal fun qqMaxQualityOf(el: JsonElement): String {
+    // 同一档位在两种形态下的键名：嵌套带下划线（size_flac），平铺不带（sizeflac）
+    fun tierOf(container: JsonElement): String {
+        fun size(vararg keys: String): Long =
+            keys.firstNotNullOfOrNull { key -> container.long(key)?.takeIf { it > 0L } } ?: 0L
+
+        return when {
+            size("size_hires") > 0L -> PlayQuality.HIRES
+            size("size_flac", "sizeflac") > 0L || size("size_ape", "sizeape") > 0L -> PlayQuality.LOSSLESS
+            size("size_320", "size320") > 0L -> PlayQuality.HIGH
+            size("size_128", "size128") > 0L -> PlayQuality.STANDARD
+            else -> null
+        }?.id.orEmpty()
+    }
+
+    // 优先嵌套 file 形态；它没给出任何线索时再退回平铺形态（两者实测互斥，这里只是兜底）
+    return el.objOrNull("file")?.let(::tierOf)?.takeIf { it.isNotEmpty() } ?: tierOf(el)
 }

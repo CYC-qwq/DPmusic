@@ -18,14 +18,24 @@ data class LyricLine(
     val words: List<LyricWord> = emptyList(),
 )
 
-/** 解析完成的歌词文档 */
+/**
+ * 解析完成的歌词文档。
+ *
+ * @param sourcePlatform 歌词**实际**来自哪个平台。null = 与原曲同平台（常态）。
+ *   跨平台兜底命中时填来源平台 —— UI 据此显示「歌词来自 QQ 音乐」之类提示，
+ *   不把别家的歌词冒充原平台的，用户有知情权。
+ */
 data class SongLyrics(
     val lines: List<LyricLine>,
     val hasTranslation: Boolean = false,
     /** 是否含逐字（字级）时间轴 */
     val hasWordTiming: Boolean = false,
+    val sourcePlatform: MusicPlatform? = null,
 ) {
     val isEmpty: Boolean get() = lines.isEmpty()
+
+    /** 是否为跨平台兜底所得（UI 据此显示来源提示） */
+    val isCrossPlatform: Boolean get() = sourcePlatform != null
 
     companion object {
         val EMPTY = SongLyrics(emptyList())

@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                     showDuration = settings.listShowDuration,
                     showCover = settings.listShowCover,
                     showSource = settings.listShowSource,
+                    showQuality = settings.listShowQuality,
                 )
                 CompositionLocalProvider(
                     LocalGlassBlur provides glassBlurLayer,

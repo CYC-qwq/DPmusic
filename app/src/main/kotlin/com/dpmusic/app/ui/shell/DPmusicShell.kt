@@ -107,6 +107,7 @@ import com.dpmusic.app.ui.components.MiniPlayerBar
 import com.dpmusic.app.ui.components.PlayerSheetHost
 import com.dpmusic.app.ui.components.QueueSheet
 import com.dpmusic.app.ui.components.SimilarSongsSheet
+import com.dpmusic.app.ui.components.VisualizerMode
 import com.dpmusic.app.ui.components.rememberAddToPlaylistHost
 import com.dpmusic.app.ui.navigation.AlbumDetailRoute
 import com.dpmusic.app.ui.navigation.ArtistDetailRoute
@@ -161,8 +162,11 @@ fun DPmusicShell(
 
     val nowPlaying by player.nowPlaying.collectAsStateWithLifecycle()
     val queue by player.queue.collectAsStateWithLifecycle()
+    // 播放页示波器开关（设置内可开关）
+    val appSettings by AppContainer.settings.settings.collectAsStateWithLifecycle()
     val lyricsState by playerVm.lyrics.collectAsStateWithLifecycle()
     val palette by playerVm.palette.collectAsStateWithLifecycle()
+    val coverSeed by playerVm.coverSeed.collectAsStateWithLifecycle()
     val favoriteKeys by playerVm.favoriteKeys.collectAsStateWithLifecycle()
     // Liquid Glass 需要「有细节可透」：空闲态（未播放）用最近播放的封面兜底，
     // 否则背景只剩一层平滑渐变色，玻璃面板看起来就是纯色卡片。
@@ -364,6 +368,7 @@ fun DPmusicShell(
                                             nowPlaying = nowPlaying,
                                             onTogglePlay = { player.togglePlayPause() },
                                             onNext = { player.next() },
+                                            onPrevious = { player.previous() },
                                             onExpand = expandSheet,
                                             onDragDelta = onMiniDragDelta,
                                             onDragStop = onMiniDragStop,
@@ -430,6 +435,7 @@ fun DPmusicShell(
                     nowPlaying = nowPlaying,
                     lyricsState = lyricsState,
                     paletteColors = palette,
+                    coverSeed = coverSeed,
                     isFavorite = isFavorite,
                     onCollapse = collapseSheet,
                     onTogglePlay = { player.togglePlayPause() },
@@ -467,6 +473,8 @@ fun DPmusicShell(
                     onToggleShuffle = { player.toggleShuffle() },
                     onDragDelta = onSheetDragDelta,
                     onDragEnd = onSheetDragStop,
+                    visualizerEnabled = appSettings.visualizerEnabled,
+                    visualizerMode = VisualizerMode.fromId(appSettings.visualizerMode),
                     coverModifier = sheetCoverModifier,
                 )
 
@@ -605,16 +613,22 @@ private fun MainNavigationBar(navController: NavHostController) {
     }
 }
 
-/** 底部导航项（两种容器共用） */
+/** 底部导航项（两种容器共用）：切换带轻触觉，选中态由 M3 指示器动画承载 */
 @Composable
 private fun androidx.compose.foundation.layout.RowScope.MainNavigationItems(
     navController: NavHostController,
     currentDestination: NavDestination?,
 ) {
+    val haptics = com.dpmusic.app.ui.util.rememberDpHaptics()
     mainNavItems.forEach { item ->
+        val selected = currentDestination.isOnRoute(item.route)
         NavigationBarItem(
-            selected = currentDestination.isOnRoute(item.route),
-            onClick = { navController.navigateToMain(item.route) },
+            selected = selected,
+            // 仅在实际切换时给触觉：重复点当前 Tab 不该震，避免「无变化也响」的廉价感
+            onClick = {
+                if (!selected) haptics.click()
+                navController.navigateToMain(item.route)
+            },
             icon = { Icon(item.icon, contentDescription = item.label) },
             label = { Text(item.label) },
         )
@@ -698,6 +712,7 @@ private fun MiniPlayerHost(
     nowPlaying: NowPlaying?,
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
+    onPrevious: () -> Unit,
     onExpand: () -> Unit,
     onDragDelta: (Float) -> Unit,
     onDragStop: (Float) -> Unit,
@@ -708,6 +723,7 @@ private fun MiniPlayerHost(
         nowPlaying = nowPlaying,
         onTogglePlay = onTogglePlay,
         onNext = onNext,
+        onPrevious = onPrevious,
         onExpand = onExpand,
         coverModifier = coverModifier,
         modifier = modifier.draggable(

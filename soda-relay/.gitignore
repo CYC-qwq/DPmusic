@@ -1,0 +1,14 @@
+# Never commit real credentials.
+secrets.json
+relay_secrets.json
+*.env
+!*.env.example
+
+# Local runtime output.
+daemon.log
+*.log
+soda_out/
+proven_out/
+key_meta.json
+__pycache__/
+*.pyc

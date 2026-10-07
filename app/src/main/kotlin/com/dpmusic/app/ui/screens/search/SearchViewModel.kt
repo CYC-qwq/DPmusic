@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.dpmusic.app.core.data.SearchHistoryRepository
 import com.dpmusic.app.core.data.SettingsRepository
 import com.dpmusic.app.core.data.UserPlaylistRepository
+import com.dpmusic.app.core.data.effectiveDefaultPlatform
+import com.dpmusic.app.core.data.enabledPlatforms
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.PlaylistSummary
 import com.dpmusic.app.core.model.Song
@@ -17,6 +19,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -28,16 +32,15 @@ import kotlinx.coroutines.launch
  */
 class SearchViewModel(
     private val repository: MusicRepository,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
     private val player: PlayerConnection,
     private val userPlaylists: UserPlaylistRepository,
     private val searchHistory: SearchHistoryRepository,
 ) : ViewModel() {
-
     private val _query = MutableStateFlow("")
     val query = _query.asStateFlow()
 
-    private val _platform = MutableStateFlow(settings.settings.value.defaultPlatform)
+    private val _platform = MutableStateFlow(settings.settings.value.effectiveDefaultPlatform())
     val platform = _platform.asStateFlow()
 
     private val _mode = MutableStateFlow(SearchMode.Songs)
@@ -59,6 +62,17 @@ class SearchViewModel(
 
     init {
         refreshHotSearch()
+        // 用户关掉某个音源后，若当前正选中它，自动切到第一个仍启用的平台，避免停在一个「搜不出东西」的状态
+        viewModelScope.launch {
+            settings.settings
+                .map { it.enabledPlatforms() }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (enabled.isNotEmpty() && _platform.value !in enabled) {
+                        onPlatformChange(enabled.first())
+                    }
+                }
+        }
     }
 
     private val _playlists = MutableStateFlow<List<PlaylistSummary>>(emptyList())

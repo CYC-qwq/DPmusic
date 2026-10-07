@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <!-- 小米超级岛：focus-api 声明 minSdk 27、shizuku:api 声明 minSdk 24，本项目 minSdk 23。
+         超级岛代码全部包在 HyperOS 版本判定 + try/catch 内，低版本设备不会执行，强制合并。 -->
+    <uses-sdk tools:overrideLibrary="com.xzakota.hyper.notification.focus,rikka.shizuku.api,rikka.shizuku.provider" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 局域网设备同步：组播发现需要 MultcastLock（屏幕关闭后仍能收包），
+         组播 socket 与 WifiManager 查询需要 ACCESS_WIFI_STATE -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
@@ -109,6 +116,15 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_music_info" />
         </receiver>
+
+        <!-- 小米超级岛（需 Shizuku）：Shizuku 授权所需的 ContentProvider -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     </application>
 
 </manifest>

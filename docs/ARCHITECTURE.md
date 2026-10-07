@@ -12,6 +12,7 @@
 | 语言 / 构建 | Kotlin + AGP + Gradle 9 | Kotlin 2.1.0 / AGP 8.13.0 |
 | UI | Jetpack Compose（BOM）+ Material 3 + Extended Icons | 2025.10.01 |
 | 播放引擎 | Jetpack Media3（ExoPlayer + MediaSessionService，含 HLS） | 1.11.1 |
+| 音频 DSP | Media3 `AudioProcessor` 链（自研 RBJ 参数均衡 + FFT 频谱抽取） | 随 Media3 |
 | 导航 | Navigation Compose（类型安全序列化路由） | 2.9.5 |
 | 网络 | OkHttp（统一连接池 / 重试） | 4.12.0 |
 | 图片 | Coil 3（复用 OkHttp） | 3.3.0 |
@@ -62,10 +63,13 @@ app/src/main/kotlin/com/dpmusic/app/
 │   │   ├── LyricsHub.kt          #   歌词中心（请求取消 / 缓存）
 │   │   ├── SimulatedVerbatim.kt  #   模拟逐字
 │   │   └── DesktopLyric*.kt      #   桌面歌词（样式 / 视图 / 服务）
-│   ├── audio/                    # 听歌识曲 + 均衡器
+│   ├── audio/                    # 听歌识曲 + 音频 DSP 链
 │   │   ├── AudioFingerprintEngine.kt / KgRecognizer.kt / AudioRecognizer.kt
 │   │   ├── AudioSampler.kt / AudioPlaybackCapturer.kt / CaptureForegroundService.kt
-│   │   └── AudioEffectsManager.kt
+│   │   ├── AudioEffectsManager.kt #   音效门面（平台音效 → Media3 DSP 后端）
+│   │   ├── DspEngine.kt           #   音频链宿主 + DspRenderersFactory
+│   │   ├── BitPerfectController.kt#   USB 独占输出控制器（Android 14+）
+│   │   └── dsp/                   #   Biquad / ParametricEqProcessor / SpectrumAudioProcessor
 │   ├── util/                     # AppLogger / StorageManager / CircuitBreaker / CoverPalette / Formatters
 │   ├── data/                     # DataStore 仓库群（15 个：设置 / 收藏 / 歌单 / 历史 /
 │   │                             #   不喜欢 / 搜索历史 / 统计 / 会话 / 账号 / 红心同步 /
@@ -161,6 +165,143 @@ Key 优先  → 代理 → 失败回退脚本      ← 默认
 
 详见 [`docs/MUSICFREE-PLUGIN.md`](MUSICFREE-PLUGIN.md)。
 
+### 3.5 歌曲评论（含楼中楼回复）
+
+入口：`MusicRepository.comments(song, page, limit)` → `PlatformApi.comments(songId, page, limit)` → `ui/components/CommentsSheet.kt`。
+
+| 平台 | 评论列表 | 楼中楼回复 |
+| --- | --- | --- |
+| 网易云 | ✅ `/api/v1/resource/comments/R_SO_4_{id}` | ⚠️ `beReplied` 可用（是被回复的那一条，最多 1 项，**无 time 字段**） |
+| QQ 音乐 | ✅ `fcg_global_comment_h5.fcg`（**`topid` 必须传数字 songId**） | ❌ 接口不提供（评论项无 `commentcount`/`replylist`；`cmd=9` 是热评流不是楼中楼） |
+| 酷狗 | ❌ 需签名，未实现 | ❌ |
+
+**QQ 的坑（已修）**：`topid` 传 MID 会**静默返回空**（`code=0` 但 `commenttotal=0`，`allow_comment=1` 看不出异常）。
+修复：`resolveNumericSongId()` 把 MID 转数字 id（复用已有 `songIdsByMids(cookie, mids)`，传空 Cookie 匿名可调）。
+实测 `0039MnYb0qxYhV → 97773` 后 `total=230665` 正常返回。
+
+**UI**：回复入口显示「查看 N 条回复」，**默认折叠**；展开态用 `remember(c.id)` 按评论 id 记忆，滚动不串位；
+折叠时 `AnimatedVisibility` 不组合子树（零开销）。详见 [`docs/COMMENTS.md`](COMMENTS.md)。
+
+### 3.6 酷狗概念版音源（第四条解析通道）
+
+**背景**：酷狗公开 Web 接口只能拿到普通音质；概念版 App（`com.kugou.android.lite`）的
+`/v5/url` 接口在**匿名无登录**状态下即可取到**免费歌完整全曲**，普通接口做不到。故把该链路
+作为 Key / 脚本 / 插件之外的第四条通道接入。
+
+| 文件 | 职责 |
+| --- | --- |
+| `core/net/KgSign.kt` | 协议常量 + 签名算法（`md5(salt + 排序k=v + body + salt)`、tracker `key`、登录 `paramsKey`） |
+| `core/net/KgLiteApi.kt` | `/v5/url` 取地址（降档 + 试听兜底）、`/user/detail` 登录校验 |
+| `core/net/KgLiteLoginApi.kt` | 手机号验证码登录（下发短信 + `login_by_verifycode` + `secu_params` 解密取 token） |
+| `core/net/KgLiteCrypto.kt` | 登录封套加密原语（AES-256-CBC 种子派生 + RSA/NoPadding 裸加密） |
+| `core/net/KgLiteResolver.kt` | 播放链路接入层（LRU + 8 分钟 TTL） |
+| `core/net/KgLiteClaimApi.kt` | 每日领 VIP（听歌 / 广告 / 任务查询，含幂等错误码处理） |
+| `core/data/KgLiteClaimService.kt` | 自动签到调度（启动延迟 8s、`yyyy-MM-dd` 同日去重） |
+| `core/data/KgLiteRepository.kt` | token / mid / 资料持久化（**仅本机**） |
+
+**⚠️ 取地址参数陷阱（`album_id` / `album_audio_id`，本轮修复的播放失败根因）**：
+
+搜索接口 `mobilecdn/api/v3/search/song` 同时返回 `album_id`、`audio_id`、`album_audio_id` 三个**不同**字段
+（例：晴天 → 966846 / 20505418 / 32100650）。`/v5/url` 只认 **`album_audio_id`**。
+若把 `audio_id` 当 `album_audio_id` 传（早期实现即如此），参数与 hash **错配** → 请求被污染：
+
+| 歌 | 传 `(album_id, audio_id→aaid)` 错误组合 | 传 `(album_id, album_audio_id)` 修复后 |
+| --- | --- | --- |
+| 富士山下（正式版） | `status=0 / error_code=35104`，**试听轮同样失败** | `status=2`（版权受限）→ 试听轮 `status=1` ✅ |
+| 富士山下(2024版) | `status=3`，**试听轮同样失败** | **`status=1` + 全曲 URL** ✅ |
+| 稻香 | `status=0 / 35104`，试听轮失败 | 试听轮 `status=1` ✅ |
+| 晴天（蓝心羽，免费） | `status=1`（碰巧可用） | `status=1` ✅ |
+
+实测还确认：`album_id` 传错**不影响**结果；但 `album_audio_id` 传**非 0 且不属于该曲**的值
+（或把 `album_id` 与不匹配的 `album_audio_id` 混搭）会误判受限。故实现为
+**只从 `extra["album_audio_id"]` 取值，缺失就传 0**（传 0 等价于省略，实测免费歌全曲可得）。
+
+**关键协议点（均实测校准）**：
+
+- **两个盐，不可混用**：老接口（`hot_tab` 等）用 `OIlwieks28dk2k092lksi2UIkp`；
+  `/v5/url` 用配置盐 `LnT6xpN3khm36zse0QzvmgTZ3waWdRSA`。
+  （已用前者复现 `KgApi.kt` 里写死的 `ee44edb9…`，证明算法骨架正确。）
+- **两个签名缺一不可**：`key = md5(hash + SECRET + appid + mid + userid)` + 标准 `signature`，
+  且 `signature` 必须在放入 `key` **之后**计算（顺序敏感）。缺任一报 `20006 err signature`。
+- **`x-router: trackercdn.kugou.com`** 是路由关键（同名 gateway 域名靠它分发）。
+- **`dfid` 用 `"-"` 即可**：实测随机 hex 串会被判 `status=0`（6/6 失败），而 `"-"` 稳定可用 →
+  **无需设备注册**（省掉 RSA/AES/二进制解密与注册风控整条链路）。
+- **`IsFreePart` 语义**：`0` = 求全曲；`1` = 允许 60s 试听片段（任何歌都返回）。
+- **`token` 必须随请求带上（本轮修复的「付费歌只有 60s」根因）**：登录态不是只给 `key`/`userid` 用的，
+  `/v5/url` 本身也要带 `token`。实测（2026-10-01，已登录账号）：
+
+  | 档位 | 无 `token` | 有 `token` |
+  | --- | --- | --- |
+  | 128 | `status=2`（受限） | `status=1` 全曲 3753KB |
+  | 320 | `status=2` | `status=1` 全曲 9382KB |
+  | **flac** | `status=2` | **`status=1` 全曲 26MB**（下载验证 `audio/flac` + magic `fLaC`） |
+  | high | `status=2` | `status=1` 全曲 |
+
+  结论订正：早期文档写「付费歌全曲需 VIP」不够准确 —— **只要带上已登录账号的 `token` 即可取全曲**，
+  无需账号本身是 VIP（概念版免费送 VIP 的活动正是为此）。这也解释了「官方概念版 App 能放全曲、
+  DPmusic 只能试听」的现象：不是账号权限差异，而是我们的请求漏了 `token` 参数。
+- **音质**：免费歌 128 可全曲；付费歌带 `token` 后 128/320/flac/high 均可全曲；无 `token` 时全部 `status=2` → 自动降档/试听兜底。
+
+**登录（手机号 + 验证码）**：概念版验证码登录**不需要人机验证**（`20028` 仅密码登录触发），
+故提供手机号验证码登录入口。关键实测校准：
+
+- **登录 query 的 `mid` 必须非空** —— 为空字符串时服务端返回 `20006 err signature`
+  （极易误判为签名错，实为封套缺 mid）。mid 首次启动随机生成并持久化。
+- 返回码语义：`20020` 验证码过期 / `20021` 验证码错误 / `20006` mid 异常 —— 均**协议已通**。
+- `params = AES({mobile, code})`，种子随机 16 位；`pk = RSA({clienttime_ms, key: 种子})`；
+  `key = md5(appid + appkey + clientver + clienttime_ms)`（**毫秒**）。
+- 登录成功后用同一「种子」解密 `data.secu_params` 取 token，再经 `/user/detail` 复核。
+- ⚠️ **下发短信接口禁用自动重试**（`Http.postJson(retryOnFailure = false)`），避免超时重试重复发送。
+
+**接入位置**：`MusicRepository.resolveWithFallback()` 的四级链 ——
+概念版「强制优先」→ Key/脚本 → 概念版兜底 → MusicFree 插件。
+开关见设置页「酷狗概念版音源」卡片（`kglite_enabled` / `kglite_force`）。
+
+**默认值（本轮调整为开箱可播）**：
+
+| 设置项 | 默认 | 原因 |
+| --- | --- | --- |
+| `defaultPlatform`（默认平台） | **酷狗 KG**（原为网易云） | 概念版仅对 KG 曲库生效（`canResolve` 要求 `platform == KG`）；默认选网易云会导致「命中了概念版通道却全程不适用」 |
+| `kglite_enabled` | **true** | 匿名即可取免费歌全曲，是本应用「开箱可播」的基础通道（Key 需自备、脚本/插件需导入，均非默认可用） |
+| `kglite_force` | **true** | 优先概念版可**避免先撞上空 Key** 产生误导性报错「未配置音源 Key」，失败仍自动回退 |
+
+> ⚠️ 默认值只在 `prefs` **无该键**时生效。设备上若曾手动改过平台/开关，旧值不会被新默认覆盖
+> （符合预期，不擅自改写用户显式选择）。
+
+**「一听就提示输入 Key」的根因（已定位）**：`lx_api_key` 为空 + `source_priority = key_first` 时，
+解析链第一步走 Key 通道，`LxResolver` 抛 `未配置音源 Key：请在「设置 → 音频偏好」中填写`。
+两个叠加因素：① 概念版默认关闭 → 兜底也不生效；② 默认平台网易云 → 概念版本就对该曲不适用。
+上述默认值调整 + `kglite_force` 后，**酷狗曲库歌曲**直接由概念版接管，不再触达空 Key 通道。
+
+**每日签到领 VIP（`kglite_auto_claim`，默认关闭）**：登录态下调用
+`/youth/v1/free_package/get_vip_task`（任务查询）+ `/youth/v2/report/listen_song`（听歌奖励）
++ `/youth/v1/ad/play_report`（广告奖励）。幂等错误码视为成功态：`130012` 听歌今日已领、
+`30002` 广告次数用尽。调度：启动后延迟 8s 执行一次，以 `yyyy-MM-dd` 记录 `kglite_last_claim_date`
+做同日去重（**失败也记录日期**，避免反复重试触发风控）。
+
+**真实设备端到端验证（2026-10-01，用设备登录态复刻协议）**：
+
+| 接口 | 实测响应 | 判定 |
+| --- | --- | --- |
+| `/v5/url`（免费歌，有 `x-router`） | `status:1` + 真实 `http://fs.youthandroid.kugou.com/...mp3`（含 `backupUrl`） | ✅ 取地址链路通 |
+| `/youth/v1/free_package/get_vip_task` | `{"status":1,"error_code":0,"data":{"task_status":0}}` | ✅ 登录态有效 |
+| `/youth/v2/report/listen_song` | `{"status":0,"error_code":130012}`（今日已领） | ✅ 幂等码已被代码覆盖 |
+| `/youth/v1/ad/play_report` | `{"status":1,"data":{"remain_vip_hour":18,"done":2,"remain":6,"award_vip_hour":3}}` | ✅ **真实领取 +3h VIP 成功** |
+
+> 注：`/user/detail` 在纯 curl 复现时返回 502 —— 该接口依赖更强的设备上下文，
+> 但**登录态有效性已由 `get_vip_task` 的 `status:1` 反证**，不影响 App 内链路。
+
+**合规边界**：仅代发一次短信并校验用户**主动输入**的验证码；不代持密码。
+自动签到属**账号自动化操作**，已在 UI 加明确风险警告（可能违反酷狗用户协议、触发风控/封号），
+**默认关闭**、需用户主动开启、风险自负。
+登录态（token / userid / mid）仅明文存本机、仅用于取播放地址与签到。
+
+**登录分支验证进展（本轮更新）**：设备上已完成一次真实手机号验证码登录并落盘
+（`kglite_token` 64 位、`kglite_mid` 31 位、`kglite_profile_json` 含 `userId`），
+且该 token 经服务端接口验证有效（见上表 `get_vip_task status:1`）→ **登录成功分支已跑通**。
+仍存在的边界：`secu_params` 的**多形态解码**（JSON / 明文串）为兼容性写法，
+不同版本服务端返回形态尚未穷举，异常时会回退明文 `token`/`t1` 字段。
+
 ---
 
 ## 4. 播放层（引擎与 UI 生命周期完全解耦）
@@ -190,6 +331,71 @@ UI 反向控制全部经由 `PlayerConnection`：`playQueue / togglePlayPause / 
 - `ShowQueueSheet` → 外壳弹出播放队列抽屉
 - `ShowMessage(text)` → 外壳 Snackbar 提示
 
+### 4.4 音频处理链（DSP 后端，Media3 AudioProcessor）
+
+平台音效（`android.media.audiofx.Equalizer / BassBoost / Virtualizer`）已**彻底移除**——`Virtualizer` 在多数机型已失效，且平台音效会抢占 AudioTrack 会话、与 Bit-Perfect 独占互斥。改用 Media3 `AudioProcessor` 链，挂在 ExoPlayer 的 AudioSink 内，处理「解码后 → 写入 AudioTrack 前」的 PCM：
+
+```
+解码 PCM ─▶ ParametricEqProcessor ─▶ SpectrumAudioProcessor ─▶ Sonic ─▶ SilenceSkipping ─▶ AudioTrack
+            (10 段参数均衡 + 立体声宽度)  (FFT 频谱抽取，只读透传)
+```
+
+| 组件 | 文件 | 职责 |
+| --- | --- | --- |
+| `Biquad` | `core/audio/dsp/Biquad.kt` | RBJ 公式双二阶滤波器（Peaking / LowShelf / HighShelf），Direct Form I，FloatArray 预分配零分配 |
+| `ParametricEqProcessor` | `core/audio/dsp/ParametricEqProcessor.kt` | 10 段参数均衡链：preamp → 低架 → 8 段峰形 → 高架 → 软限幅；支持 16-bit / float PCM |
+| `SpectrumAudioProcessor` | `core/audio/dsp/SpectrumAudioProcessor.kt` | 1024 点 radix-2 FFT + Blackman-Harris 窗；输出 48 根频谱柱 + 1024 点波形；**只读不改纯透传**（不破坏 bit-perfect） |
+| `DspEngine` | `core/audio/DspEngine.kt` | 音频链宿主；`DspRenderersFactory` 重写 `DefaultRenderersFactory.buildAudioSink` 注入 `DefaultAudioSink.DefaultAudioProcessorChain(eq, spectrum)`（Sonic / SilenceSkipping 由 Media3 自动追加） |
+| `AudioEffectsManager` | `core/audio/AudioEffectsManager.kt` | 对外 API 门面（`bandLevelsMb` / `bassStrength` / `surroundStrength` / `presets`），把持久化状态翻译成 DSP 参数 |
+
+**关键设计（均为踩坑后修正，勿回退）**：
+
+- **`isActive()` 恒为 true**：Media3 只在 `configure` 阶段按 `isActive()` 过滤处理器，编入后再改返回值**不会**移出链。开关因此由处理器内部 `@Volatile eqEnabled` 决定（关闭时纯透传），不能靠 `isActive()`。
+- **`onFlush()` 必须用新签名**：`onFlush(StreamMetadata)` 已取代无参 `onFlush()`（后者 deprecated）。
+- **多声道安全降级**：输入 `channelCount > 2` 时 `onConfigure` 返回 `AudioFormat.NOT_SET`，避免 5.1 被当 2 声道处理导致串音。
+- **预增益防削顶**：`preampFor()` 按频段峰值自动衰减（上限 -12dB）。
+- **立体声宽度**：M/S 扩展替代已死的 `Virtualizer`，系数 1.0~2.0（`1 + surroundStrength/1000`）。
+- **频段表按频率单调递增**（80Hz 低架 / 1k~16k 峰形 / 16k 高架），否则 UI 响应曲线会错乱。
+
+**示波器数据侧可调项**（集中在 `SpectrumAudioProcessor`）：
+
+| 常量 | 值 | 约束 |
+| --- | --- | --- |
+| `PUBLISH_HZ` | 100 | **必须 > 屏幕刷新率 60Hz**，否则 UI 隔帧跳变（一卡一卡） |
+| `DECAY` | 0.912f | 落峰 ≈ 500ms，**与发布频率解耦**，改 `PUBLISH_HZ` 需同步改 |
+| `WAVE_SIZE` | 1024 | 逐帧写入不抽点，等效采样率 = 源采样率（抽点会让高频混叠） |
+| `BAR_COUNT` | 48 | 对数分桶 20Hz~20kHz |
+| `FLOOR_DB` | -84f | 频谱动态下限 |
+
+波形起点用**过零上升沿触发**（全缓冲从新到旧扫描最后一次上升沿），保证每帧起点相位一致、不左右乱跑。
+
+### 4.5 USB Bit-Perfect 独占输出（Android 14+）
+
+`core/audio/BitPerfectController.kt`：通过 `AudioManager.setPreferredMixerAttributes` 为外接 USB DAC 申请 `MIXER_BEHAVIOR_BIT_PERFECT` 混音属性，绕过系统混音器直通输出。
+
+- **支持判定**：遍历 `getSupportedMixerAttributes(device)` 找 `mixerBehavior == MIXER_BEHAVIOR_BIT_PERFECT`（**不存在** `isBitPerfectPlaybackSupported` 这个方法）
+- **API 签名**（已逐个核实，勿按臆想写）：
+  - `setPreferredMixerAttributes(AudioAttributes, AudioDeviceInfo, AudioMixerAttributes): Boolean`（**3 参**）
+  - `clearPreferredMixerAttributes(AudioAttributes, AudioDeviceInfo): Boolean`（**2 参**）
+  - `AudioMixerAttributes.Builder(AudioFormat)`（**构造器传格式**，无 `setFormat`）+ `.setMixerBehavior(int)`
+- **设备优先级**：`USB_DEVICE → USB_HEADSET → USB_ACCESSORY → WIRED_HEADPHONES → WIRED_HEADSET → BLUETOOTH_A2DP`
+- **三个必做配套**：
+  1. **强制旁路全部 DSP** —— `AudioEffectsManager.applyEnabled()` 中 `enabled && !bitPerfectBypass`，并在设置卡片与均衡器面板**两处**明示「独占期间 EQ 不可用」
+  2. **参数防抖缓存** —— `appliedKey = "${device.id}|${sampleRate}|${channelCount}"`，命中则跳过重复调用，避免 DAC 反复断流爆音
+  3. **生命周期** —— `AudioDeviceCallback` 监听拔插 + `MusicService.onDestroy` 调 `release()` 归还控制权
+- 真实解码格式由 `AnalyticsListener.onAudioInputFormatChanged` 上报，用于匹配 `AudioMixerAttributes` 的采样率
+- 无外接设备时状态为「未检测到外接音频设备（插上 USB DAC 后自动启用）」，不影响正常播放
+
+### 4.6 新增设置项（`SettingsRepository`）
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `bit_perfect_enabled` | Boolean | `false` | USB Bit-Perfect 独占输出开关 |
+| `visualizer_enabled` | Boolean | `false` | 播放页示波器开关 |
+| `visualizer_mode` | String | `"both"` | 示波器展示内容：`bars` / `wave` / `both` |
+
+三者均进 `SyncScopes.SETTINGS_KEYS` 白名单（纯偏好，无敏感信息），由 `AppContainer.startAudioDspSync()` 统一分发到三个子系统。
+
 ---
 
 ## 5. 数据与状态（MVI / MVVM）
@@ -207,7 +413,7 @@ UI (Compose) ──intent──▶ ViewModel ──suspend──▶ Repository �
 - 页面状态：每页独立 `ViewModel`（`StateFlow` 单向流出），错误统一 `error: StateFlow<String?>`
 - 播放状态：`PlayerConnection.nowPlaying / queue` 为全局单一数据源，页面与外壳共同订阅
 - 持久化（DataStore Preferences，`core/data` 共 15 个仓库）：
-  - `SettingsRepository`：默认平台 / 音质 / 动态取色 / 深色三态 / 音源 Key / 解析优先级 / 玻璃开关 …
+  - `SettingsRepository`：默认平台 / 音质 / 动态取色 / 深色三态 / 音源 Key / 解析优先级 / 玻璃开关 / **USB 独占开关 / 示波器开关 / 示波器模式** …
   - `FavoritesRepository`：收藏（`stableKey` 去重）
   - `HistoryRepository`：最近播放 + 进度（按 `stableKey` 回写）
   - `UserPlaylistRepository`：本地歌单 + 链接歌单（含定时更新）
@@ -236,9 +442,11 @@ UI (Compose) ──intent──▶ ViewModel ──suspend──▶ Repository �
 
 ### 6.2 播放器双形态
 
-- **竖屏**：大黑胶封面（旋转 + 呼吸）→ 歌曲信息 → 96dp 迷你歌词窗口（点击展开全屏歌词）→ 控制条
-- **横屏**：黄金分割——左 0.618 黑胶 + 流光背景，右 1.0 全尺寸歌词 + 控制台
+- **竖屏**：大黑胶封面（旋转 + 呼吸）→ 歌曲信息 → 96dp 迷你歌词窗口（点击展开全屏歌词）→ 示波器（可选）→ 控制条
+- **横屏**：黄金分割——左 0.618 黑胶 + 流光背景，右 1.0 全尺寸歌词 + 控制台（示波器置左栏控制行下方）
 - 判定：`maxWidth > maxHeight * 1.15f`（运行时约束，而非设备类别）
+- **示波器融入式呈现**（`SpectrumVisualizer`）：不使用 `Surface` / 圆角卡片，直接以 `Canvas` 绘于页面流光底——频谱柱为主色→tertiary 竖向渐变 + 全圆角，波形为「极淡中线 + 下方 0.16→0.02 渐变填充 + 外发光 + 主色→tertiary→主色横向渐变实线」，与玻璃风格的沉浸感一致
+- **流畅性双保险**：数据侧 100Hz 发布（> 60Hz 屏幕，每 vsync 必有新帧）+ UI 侧频谱柱逐帧缓动（`SMOOTH_BARS = 0.30f`）；波形**不做逐点插值**（相位随触发点整体平移，插值会产生重影），连续性靠数据率 + 过零触发保证
 
 ### 6.3 Mini ⇄ 全屏流体形变 + 共享元素
 
@@ -259,7 +467,7 @@ UI (Compose) ──intent──▶ ViewModel ──suspend──▶ Repository �
 - **动态取色**：Android 12+ 动态色彩（设置可关）；不可用时回退至内置手调色板
 - **深色三态**：跟随系统 / 浅色 / 深色
 - **M3 形态语言**：大圆角卡片（ExtraLarge）、全圆角胶囊（FilterChips / Pill Button）、分段按钮（`SingleChoiceSegmentedButtonRow`，我的页两 Tab 切换）
-- **组件库（42 个）**：基础类 `pressScale` / `staggeredEntrance` / `CoverArt`（模糊衬底）/ `PlatformBadge` / `PlatformChips` / `StateViews` / `Skeleton`（骨架屏）/ `DpTopAppBar` / `ListDisplay` / `ListFilterBar`；列表类 `SongRow`（含 `SwipeableSongRow`）/ `PlaylistRow` / `SongSelection`；播放类 `MiniPlayerBar` / `NowPlayingPanel` / `PlayerSheet` / `QueueSheet` / `VinylDisc` / `LyricsView`；弹层类 `CommentsSheet` / `EqualizerSheet` / `SleepTimerSheet` / `PlaybackSpeedSheet` / `RecognitionSheet` / `SimilarSongsSheet` / `DislikeManagerSheet` / `DesktopLyricSheet` / `DownloadSheet` / `DownloadBall` / `SongShareSheet` / `ShareToNcmFriendDialog` / `NcmFriendPickerDialog` / `AddToPlaylistDialog` / `AddToPlaylistHost` / `ClipboardLinkDialog` / `WebLoginDialog` / `SearchField` / `SearchModeToggle` / `SearchTopBar` / `ListeningStatsCard` / `AccountPlaylistMiniCard`；材质类 `Glass`（GlassSurface / GlassBackdrop）/ `LiquidGlass`（液态玻璃内核）
+- **组件库（43 个）**：基础类 `pressScale` / `staggeredEntrance` / `CoverArt`（模糊衬底）/ `PlatformBadge` / `PlatformChips` / `StateViews` / `Skeleton`（骨架屏）/ `DpTopAppBar` / `ListDisplay` / `ListFilterBar`；列表类 `SongRow`（含 `SwipeableSongRow`）/ `PlaylistRow` / `SongSelection`；播放类 `MiniPlayerBar` / `NowPlayingPanel` / `PlayerSheet` / `QueueSheet` / `VinylDisc` / `LyricsView` / `Visualizer`（示波器，`SpectrumVisualizer` + `VisualizerMode`，**无卡片背景**直接绘于流光底）；弹层类 `CommentsSheet` / `EqualizerSheet` / `SleepTimerSheet` / `PlaybackSpeedSheet` / `RecognitionSheet` / `SimilarSongsSheet` / `DislikeManagerSheet` / `DesktopLyricSheet` / `DownloadSheet` / `DownloadBall` / `SongShareSheet` / `ShareToNcmFriendDialog` / `NcmFriendPickerDialog` / `AddToPlaylistDialog` / `AddToPlaylistHost` / `ClipboardLinkDialog` / `WebLoginDialog` / `SearchField` / `SearchModeToggle` / `SearchTopBar` / `ListeningStatsCard` / `AccountPlaylistMiniCard`；材质类 `Glass`（GlassSurface / GlassBackdrop）/ `LiquidGlass`（液态玻璃内核）
 - 视觉亮点：封面 Palette 主色 → 黑胶辉光流光；榜单瀑布流卡片悬浮微光；歌单详情视差折叠头部；最近播放时间轴节点；收藏页滑动操作胶囊
 
 ### 7.1 动效与交互反馈体系（Motion & Feedback）
@@ -328,6 +536,10 @@ UI (Compose) ──intent──▶ ViewModel ──suspend──▶ Repository �
 | LX 代理 403/429 | 终止降档尝试，Snackbar 明示失败原因 |
 | 某平台音源整体不可用 | 跨平台相似度匹配兜底 → 仍失败则自动跳过并提示 |
 | 音质档位 UI 枚举 5 档 | master/atmos 档位在链中可用，UI 循环仅暴露 5 档以保稳定 |
+| Bit-Perfect 需 Android 14+ 且依赖设备支持 | 低版本 / 不支持时 `supported=false`，开关置灰并给出原因；普通播放不受影响 |
+| 无外接 USB DAC 时 Bit-Perfect 无法激活 | 状态显示「未检测到外接音频设备（插上 USB DAC 后自动启用）」，插拔自动感知 |
+| Bit-Perfect 与均衡器互斥 | 独占期间强制旁路全部 DSP，设置卡片与均衡器面板两处明示 |
+| 输入为多声道（> 2ch）时参数均衡不适用 | `onConfigure` 返回 `NOT_SET` 安全降级为纯透传，避免串音 |
 
 ## 10. 扩展指南
 

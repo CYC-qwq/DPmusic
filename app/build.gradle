@@ -5,6 +5,36 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// focus-api:1.4 的传递依赖会拉入 Kotlin 2.3 / kotlinx-serialization 1.10，
+// 本项目 Kotlin 插件为 2.1.0，强制回退到可读取的版本，避免 metadata 不兼容。
+configurations.configureEach {
+    resolutionStrategy {
+        force(
+            "org.jetbrains.kotlin:kotlin-stdlib:2.1.0",
+            "org.jetbrains.kotlin:kotlin-reflect:2.1.0",
+            "org.jetbrains.kotlinx:kotlinx-serialization-core:1.8.0",
+            "org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.8.0",
+            "org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0",
+            "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.8.0",
+        )
+        eachDependency {
+            // 仅精确匹配 kotlin-stdlib。kotlin-stdlib-jdk7/jdk8 是废弃的空重定向构件，
+            // 只到 1.8.x，强制成 2.1.0 会导致去远端拉取不存在的版本而失败。
+            if (requested.group == "org.jetbrains.kotlin" && requested.name == "kotlin-stdlib") {
+                useVersion("2.1.0")
+                because("项目 Kotlin 插件为 2.1.0")
+            }
+            if (requested.group == "org.jetbrains.kotlin" && requested.name == "kotlin-reflect") {
+                useVersion("2.1.0")
+            }
+            if (requested.group == "org.jetbrains.kotlinx" && requested.name.startsWith("kotlinx-serialization")) {
+                useVersion("1.8.0")
+            }
+        }
+    }
+}
+
 android {
     namespace 'com.dpmusic.app'
     compileSdk 36
@@ -12,9 +42,42 @@ android {
         applicationId 'com.dpmusic.app'
         minSdk 23
         targetSdk 34
-        versionCode 2
-        versionName '1.1.0'
-        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        versionCode 3
+        versionName '1.2.0'
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // ABI：arm64-v8a + armeabi-v7a，覆盖全部 ARM 安卓设备（含仅 32 位的低端机 / Android Go）。
+        // 不含 x86 / x86_64（Intel 平板、桌面模拟器）；要在模拟器调试时把对应 ABI 加回来。
+        //
+        // ⚠️ quickjs / datastore / graphics.path 三个 .so 缺任一都会在首次使用时崩，
+        //    每加/减一个 ABI 都要保证对应架构的 .so 齐全。
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+    /**
+     * 两个变体：带 / 不带汽水登录 SDK。
+     *
+     * - **withsdk**：完整版，带 `assets/qishui_host/`（官方 JS SDK，用于手机号验证码 + MFA 登录）。
+     * - **nosdk**：精简版，**不含**该 SDK；UI 会明确提示「登录 SDK 缺失」，
+     *   但音源解析、扫码登录、手动填写凭证等**其它功能照常可用**。
+     *
+     * 资源放在 flavor 专属 source set（`src/withsdk/assets/qishui_host/`）里，
+     * nosdk 变体自然拿不到 —— 不需要任何构建脚本，也不会误打包。
+     */
+    flavorDimensions += 'qishuilogin'
+    productFlavors {
+        create('withsdk') {
+            dimension = 'qishuilogin'
+            // 完整版：不做后缀，覆盖安装时沿用原包名
+            buildConfigField 'boolean', 'QISHUI_SDK', 'true'
+        }
+        create('nosdk') {
+            dimension = 'qishuilogin'
+            // 精简版：加后缀，可与完整版共存（包名 com.dpmusic.app.nosdk）
+            applicationIdSuffix = '.nosdk'
+            versionNameSuffix = '-nosdk'
+            buildConfigField 'boolean', 'QISHUI_SDK', 'false'
+        }
     }
     // 签名配置：release 复用 Android 默认调试签名 —— 本地自用，且与 debug 包同签名，
 // 可以直接覆盖安装（不需要先卸载）。要正式发布时替换为自己的 keystore 即可。
@@ -29,13 +92,31 @@ android {
     buildTypes {
         release {
             signingConfig signingConfigs.release
-            // 保持不混淆：项目未配置 keep 规则，开启 R8 会破坏 Compose / kotlinx.serialization
-            minifyEnabled false
-            shrinkResources false
+            // R8 混淆 + 资源压缩。
+            //
+            // 体积大头是 **dex**：未开启 R8 时约 57MB 解压体积（APK 约 31MB）。
+            // 开启后一般能砍掉一半以上。此前注释说「未配置 keep 规则」——现在补全了
+            // proguard-rules.pro，覆盖 Compose / kotlinx.serialization / @JavascriptInterface /
+            // Media3 等反射敏感点。
+            //
+            // ⚠️ 若哪天再出「ClassNotFoundException / NoSuchMethodError / 序列化字段丢失」，
+            //    优先怀疑 R8 规则而不是业务代码，见 proguard-rules.pro 里的说明。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
     buildFeatures {
         compose true
+        // 供 flavor 注入 `QISHUI_SDK` 开关（见 productFlavors）
+        buildConfig true
+    }
+    testOptions {
+        unitTests {
+            // AppLogger 走 android.util.Log；纯逻辑（协议编解码、服务端路由）的单元测试
+            // 不依赖真实 Android 运行时，返回默认值即可（抛出「not mocked」会淹没日志）
+            returnDefaultValues = true
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -74,6 +155,8 @@ dependencies {
     implementation libs.kotlinx.coroutines.android
     implementation libs.kotlinx.serialization.json
     implementation libs.okhttp
+    implementation libs.nanohttpd
+    implementation libs.androidx.webkit
     implementation libs.coil.compose
     implementation libs.coil.network.okhttp
 
@@ -90,4 +173,18 @@ dependencies {
 
     debugImplementation libs.androidx.ui.tooling
     debugImplementation libs.androidx.ui.test.manifest
+
+    // 单元测试：协议编解码与服务端路由（纯 JVM）
+    testImplementation libs.junit
+    // 本地单测里的 `android.jar` 是 mockable jar，`org.json.*` 全是空实现
+    // （`JSONObject.getJSONObject` 恒返回 null）—— 凡是走 JSON 的解析逻辑都会误判失败。
+    // 引入真实实现，让这类逻辑能在 JVM 上被测到。
+    testImplementation("org.json:json:20240303")
+
+    // 小米 HyperOS 超级岛（高级选项，需 Shizuku）：
+    // focus-api 构建 miui.focus.* 通知载荷；Shizuku + hiddenapibypass 供「断网魔法」绕过 XMSF 签名校验。
+    implementation libs.focus.api
+    implementation libs.shizuku.api
+    implementation libs.shizuku.provider
+    implementation libs.hiddenapibypass
 }

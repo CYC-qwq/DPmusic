@@ -14,10 +14,14 @@ object SyncScopes {
         "lyric_spacing_portrait", "lyric_spacing_landscape",
         "verbatim_lyric", "simulated_verbatim", "dynamic_color", "dark_mode",
         "clipboard_auto_read", "theme_color", "glass_mode", "source_priority",
+        // 逐平台解析链路 + 跨平台兜底开关（v1.3.0）：纯配置，无敏感信息
+        "source_chains_json", "cross_platform_fallback",
         "playback_speed", "sleep_timer_wait_song_end", "lyric_s2t",
         "list_show_album_name", "list_show_duration", "list_show_cover", "list_show_source",
         "download_write_tags", "download_write_cover", "download_embed_lyric",
         "equalizer_settings_json", "user_script_list_json", "user_script_active_id",
+        // 音频 DSP（v1.2.0）：Bit-Perfect / 示波器为纯偏好，无敏感信息，参与同步
+        "bit_perfect_enabled", "visualizer_enabled", "visualizer_mode",
     )
 
     /** 「设置与音源」前缀匹配（自定义音源脚本内容：user_script_content_{id}） */

@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dpmusic.app.core.data.SettingsRepository
 import com.dpmusic.app.core.data.UserPlaylistRepository
+import com.dpmusic.app.core.data.effectiveToplistPlatform
+import com.dpmusic.app.core.data.toplistPlatforms
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.RankSummary
 import com.dpmusic.app.core.model.Song
@@ -12,6 +14,8 @@ import com.dpmusic.app.core.repo.MusicRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -21,11 +25,10 @@ import kotlinx.coroutines.launch
  */
 class RankViewModel(
     private val repository: MusicRepository,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
     private val player: PlayerConnection,
 ) : ViewModel() {
-
-    private val _platform = MutableStateFlow(settings.settings.value.defaultPlatform)
+    private val _platform = MutableStateFlow(settings.settings.value.effectiveToplistPlatform())
     val platform = _platform.asStateFlow()
 
     private val _ranks = MutableStateFlow<List<RankSummary>>(emptyList())
@@ -52,9 +55,19 @@ class RankViewModel(
     val nowPlaying = player.nowPlaying
 
     private var detailJob: Job? = null
-
     init {
         loadRanks()
+        // 开关变化时同时纠正选中平台：必须落在「已启用且提供榜单」的集合内
+        viewModelScope.launch {
+            settings.settings
+                .map { it.toplistPlatforms() }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (enabled.isNotEmpty() && _platform.value !in enabled) {
+                        onPlatformChange(enabled.first())
+                    }
+                }
+        }
     }
 
     fun loadRanks() {

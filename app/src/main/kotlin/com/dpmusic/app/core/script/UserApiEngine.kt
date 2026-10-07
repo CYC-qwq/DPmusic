@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -41,14 +43,55 @@ sealed interface ScriptEngineStatus {
     /** 正在加载脚本 */
     data class Loading(val scriptId: String) : ScriptEngineStatus
 
-    /** 脚本已就绪（sources：平台标识 → 支持的 action 列表） */
+    /** 脚本已就绪（sources：平台标识 → 该平台支持的能力与音质档） */
     data class Ready(
         val scriptId: String,
+        /** source → 支持的 action 列表（如 musicUrl / lyric / pic） */
         val sources: Map<String, List<String>>,
+        /** source → 脚本**实际声明**的音质档 id（如 `128k`/`320k`/`flac`/`hires`）；空 = 未声明 */
+        val qualities: Map<String, List<String>> = emptyMap(),
     ) : ScriptEngineStatus
 
     /** 加载或初始化失败 */
     data class Failed(val scriptId: String, val message: String) : ScriptEngineStatus
+}
+
+/**
+ * 脚本引擎契约（[UserApiEngine] 的实现维度）。
+ *
+ * 抽出来的**唯一**理由：让 [ScriptEnginePool] 能在普通 JVM 单测里用假引擎驱动
+ * —— 真实引擎依赖 QuickJS 与 `android.os.HandlerThread`，只能在设备上跑，
+ * 那样池的「加载 / 卸载 / 幂等」逻辑就只能靠人肉点点看。
+ *
+ * 池对引擎的依赖面很窄，正好就是下面五项：加载、销毁、状态、读内存、下发请求。
+ */
+interface ScriptEngine {
+    val status: StateFlow<ScriptEngineStatus>
+
+    fun load(
+        scriptId: String,
+        name: String,
+        description: String,
+        version: String,
+        author: String,
+        homepage: String,
+        script: String,
+    )
+
+    fun destroy()
+
+    fun queryMemoryUsage(onResult: (Long) -> Unit)
+
+    /** 向脚本下发一次解析请求并等待响应 */
+    suspend fun requestScript(
+        data: JSONObject,
+        timeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,
+    ): JSONObject
+
+    companion object {
+        /** 默认请求超时，与 [UserApiEngine] 内部约定一致 */
+        const val DEFAULT_REQUEST_TIMEOUT_MS = 20_000L
+    }
 }
 
 /**
@@ -66,9 +109,23 @@ sealed interface ScriptEngineStatus {
  * - 网络线程池：脚本请求的 HTTP 执行，完成后投递回工作线程回传；
  * - 状态流：任意线程可安全读取。
  */
-class UserApiEngine(private val context: Context) {
-
-    private val networkExecutor = Executors.newCachedThreadPool()
+class UserApiEngine(private val context: Context) : ScriptEngine {
+    /**
+     * 网络线程池（脚本 `lx.request` 的 HTTP 执行）。
+     *
+     * 为什么不用 `Executors.newCachedThreadPool()`：它的线程数**无上限**，
+     * 仅在复用不到空闲线程时就新建 —— 脚本一次性并发发起几十个请求时，
+     * 会瞬间创建同等数量的线程（每线程约 1MB 栈），是真实的内存尖峰来源。
+     *
+     * 这里改为有界：核心 2、最多 8，其余排队。脚本音源是**解析地址**用，
+     * 并发量本就很小（通常 1-2 个在飞），8 已远超实际需要；
+     * 队列用无界 LinkedBlockingQueue 保证突发请求不会被拒（拒绝会让解析直接失败）。
+     */
+    private val networkExecutor = ThreadPoolExecutor(
+        2, 8, 30L, TimeUnit.SECONDS,
+        LinkedBlockingQueue(),
+        { r -> Thread(r, "lx-net").apply { isDaemon = true } },
+    )
 
     private var thread: HandlerThread? = null
     private var worker: Handler? = null
@@ -79,7 +136,7 @@ class UserApiEngine(private val context: Context) {
     private val requestCalls = ConcurrentHashMap<String, Call>()
 
     private val _status = MutableStateFlow<ScriptEngineStatus>(ScriptEngineStatus.Idle)
-    val status: StateFlow<ScriptEngineStatus> = _status.asStateFlow()
+    override val status: StateFlow<ScriptEngineStatus> = _status.asStateFlow()
 
     private val pendingScriptRequests = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
@@ -97,7 +154,7 @@ class UserApiEngine(private val context: Context) {
     }
 
     /** 加载并运行脚本（自动替换现有脚本） */
-    fun load(
+    override fun load(
         scriptId: String,
         name: String,
         description: String,
@@ -118,8 +175,33 @@ class UserApiEngine(private val context: Context) {
         return true
     }
 
+    /**
+     * 查询当前 QuickJS 上下文**实际占用**的字节数（未加载时为 0）。
+     *
+     * 结果通过 [onResult] 在**工作线程**回调 —— QuickJS 的 API 不是线程安全的，
+     * 必须回到引擎自己的工作线程上读。`onResult` 里只该做「写进 StateFlow」这类小事。
+     *
+     * 用途：音源管理页的「实时占用」提示（用户开了多个脚本时需要知道代价）。
+     */
+    override fun queryMemoryUsage(onResult: (Long) -> Unit) {
+        val handler = worker
+        if (handler == null) {
+            onResult(0L)
+            return
+        }
+        handler.post {
+            val bytes = try {
+                jsContext?.memoryUsedSize ?: 0L
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "读取脚本内存占用失败：${e.message}")
+                0L
+            }
+            onResult(bytes)
+        }
+    }
+
     /** 向脚本发起一次请求并等待响应（宿主 → 脚本 → 宿主）；返回脚本响应的 JSON 字符串 */
-    suspend fun requestScript(data: JSONObject, timeoutMs: Long = SCRIPT_REQUEST_TIMEOUT_MS): JSONObject {
+    override suspend fun requestScript(data: JSONObject, timeoutMs: Long): JSONObject {
         val requestKey = "req_" + UUID.randomUUID().toString().replace("-", "")
         val deferred = CompletableDeferred<String>()
         pendingScriptRequests[requestKey] = deferred
@@ -140,7 +222,7 @@ class UserApiEngine(private val context: Context) {
     }
 
     /** 销毁当前脚本（保留引擎线程，供下次加载复用） */
-    fun destroy() {
+    override fun destroy() {
         val handler = worker
         if (handler == null) {
             _status.value = ScriptEngineStatus.Idle
@@ -348,6 +430,7 @@ class UserApiEngine(private val context: Context) {
             if (json.optBoolean("status", false)) {
                 val sourcesObj = json.optJSONObject("info")?.optJSONObject("sources")
                 val sources = linkedMapOf<String, List<String>>()
+                val qualities = linkedMapOf<String, List<String>>()
                 if (sourcesObj != null) {
                     val keys = sourcesObj.keys()
                     while (keys.hasNext()) {
@@ -361,10 +444,24 @@ class UserApiEngine(private val context: Context) {
                             }
                         }
                         sources[source] = actions
+                        // 脚本声明的音质档（LX 脚本 init 的 info.sources[src].qualitys，
+                        // 由 user-api-preload.js 过滤后回传）。不解析会丢失「脚本支持的更多音质」。
+                        val qualityArr = item.optJSONArray("qualitys")
+                        if (qualityArr != null) {
+                            val qs = mutableListOf<String>()
+                            for (i in 0 until qualityArr.length()) {
+                                qualityArr.optString(i).takeIf { it.isNotBlank() }?.let { qs.add(it) }
+                            }
+                            if (qs.isNotEmpty()) qualities[source] = qs
+                        }
                     }
                 }
-                _status.value = ScriptEngineStatus.Ready(currentScriptId, sources)
-                AppLogger.i(TAG, "脚本已就绪：支持 ${sources.keys.joinToString("/")}")
+                _status.value = ScriptEngineStatus.Ready(currentScriptId, sources, qualities)
+                AppLogger.i(
+                    TAG,
+                    "脚本已就绪：支持 ${sources.keys.joinToString("/")}；音质 " +
+                        qualities.entries.joinToString("；") { "${it.key}=${it.value.joinToString(",")}" },
+                )
             } else {
                 val message = json.optString("errorMessage", "脚本初始化失败")
                 _status.value = ScriptEngineStatus.Failed(currentScriptId, message)

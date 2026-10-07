@@ -2,6 +2,8 @@ package com.dpmusic.app.core.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.SystemClock
 import androidx.annotation.OptIn
@@ -22,19 +24,32 @@ import com.dpmusic.app.core.data.HistoryRepository
 import com.dpmusic.app.core.data.PlaybackSession
 import com.dpmusic.app.core.data.PlaybackSessionStore
 import com.dpmusic.app.core.data.SettingsRepository
+import com.dpmusic.app.core.lansync.LanPlaybackPayload
+import com.dpmusic.app.core.lyric.CarLyricInfo
+import com.dpmusic.app.core.lyric.ExternalBluetoothLyrics
+import com.dpmusic.app.core.lyric.LyricsHub
 import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.Song
+import com.dpmusic.app.core.model.SongLyrics
+import com.dpmusic.app.core.model.startQualityFor
+import com.dpmusic.app.core.net.Http
 import com.dpmusic.app.core.repo.MusicRepository
 import com.dpmusic.app.core.util.AppLogger
+import com.dpmusic.app.core.util.BoundedCache
+import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * UI 与 MediaSessionService 之间的唯一桥接层。
@@ -98,6 +113,73 @@ class PlayerConnection(
     private val _quality = MutableStateFlow(PlayQuality.HIGH)
     val quality: StateFlow<PlayQuality> = _quality
 
+    /**
+     * 「默认以标定最高音质播放」开关（来自设置，热更新）。
+     *
+     * 开启后每首歌的解析起点改为 `Song.maxQuality`（列表接口标定），
+     * 而非全局 [quality] —— 见 [startQualityFor]。标定缺失的歌曲仍用 [quality]。
+     */
+    @Volatile
+    private var autoHighest = false
+
+    /** 车载 / 蓝牙歌词开关（来自设置，热更新） */
+    @Volatile
+    private var carLyricEnabled = false
+
+    /**
+     * 「发送整首 LRC」开关（来自设置，热更新）。
+     *
+     * 关闭时**不写入** MIUI / ColorOS 的整首歌词 extras —— 不写比写更稳：
+     * 整首 LRC 会随每次元数据更新一起序列化并跨进程序列化，而蓝牙链路根本不读它。
+     * 只有 `lyricInfo` 等在上一轮写入过的残留才需要清掉一次（见 [carLyricExtrasClearedForKey]）。
+     */
+    @Volatile
+    private var carLyricFullLrc = false
+
+    /** 车机歌词 metadata 刷新任务（歌词就绪 / 开关变化 / 歌词行变化时重写当前槽位） */
+    private var carLyricJob: Job? = null
+
+    /**
+     * 实际已写进 metadata 标题的外发歌词文本（或回落后的歌名）。
+     *
+     * 用**文本**而非歌曲 key 记账，是为了让「切歌」与「同行内多次 tick」共用一条判据：
+     * 两者都只表现为该值发生变化。
+     */
+    private var carLyricTitleText: String? = null
+
+    /**
+     * 已经通过 [refreshCarLyric] 清掉整首歌词 extras 的曲目 key。
+     *
+     * 关掉「发送整首 LRC」后必须把上一首残留的 extras 抹掉（否则车机 / 锁屏会一直显示旧歌词）；
+     * 但清一次就够了：若每 500ms 的无变化 tick 都重建一遍媒体项，会产生持续的跨进程元数据刷新，
+     * 白白耗电。故只在「与上次清理时不同的曲目」上执行。
+     */
+    private var carLyricExtrasClearedForKey: String? = null
+
+    // ---------------- 系统媒体中心的封面（artworkData） ----------------
+
+    /**
+     * 封面字节缓存（songKey → JPEG 字节）。
+     *
+     * 为什么缓存字节而不是 Bitmap：`MediaMetadata.setArtworkData` 要的是**压缩后的字节**
+     * （系统侧自行解码）；而且这份字节会随每次 metadata 广播**跨进程传输**，
+     * 所以必须压到几十 KB —— 缓存下来可以避免每首歌反复下载 + 反复压缩。
+     */
+    private val artworkBytes = object : LinkedHashMap<String, ByteArray>(ARTWORK_CACHE_MAX, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>): Boolean =
+            size > ARTWORK_CACHE_MAX
+    }
+
+    /** 正在下载中的曲目（去重：`metadata()` 会被 ticker 反复调用，不能每次都发起下载） */
+    private val artworkPending = HashSet<String>()
+
+    /**
+     * 该曲实际使用的解析起点档位。
+     * 关闭开关时恒等于 [quality]（逐曲行为与改动前完全一致）。
+     */
+    private fun resolveQualityFor(song: Song): PlayQuality =
+        startQualityFor(song, _quality.value, autoHighest)
+
     /** 向上层 UI 抛出的命令流（打开播放页 / 队列页 / Snackbar 提示） */
     val commands = MutableSharedFlow<PlayerCommand>(extraBufferCapacity = 8)
 
@@ -129,8 +211,16 @@ class PlayerConnection(
      */
     private var pendingSkipTarget: Int? = null
 
-    /** 实际生效音质（stableKey → 实际命中档位；自动降级链结果） */
-    private val actualQuality = mutableMapOf<String, PlayQuality>()
+    /**
+     * 实际生效音质（stableKey → 实际命中档位；自动降级链结果）。
+     *
+     * 有界 LRU：改动前它是无上限的 `mutableMapOf`，每解析过一首就留一条、
+     * 永不清理。单条约 100B，量级不大但同样是「只增不减」，长期连续播放会缓慢爬升。
+     * 上限 2000 ≈ 200KB，远超「本次会话可能需要回看」的范围。
+     *
+     * 仅在 [scope]（`Dispatchers.Main.immediate`）内读写，故不需要额外加锁。
+     */
+    private val actualQuality = BoundedCache<String, PlayQuality>(maxEntries = MAX_ACTUAL_QUALITY)
 
     /** 「不喜欢」连锁跳过标记：跳过期间后续切歌继续检查屏蔽规则 */
     private var dislikeSkipGuard = false
@@ -142,9 +232,31 @@ class PlayerConnection(
         connectStarted = true
         scope.launch {
             _quality.value = settings.settings.value.quality
+            autoHighest = settings.settings.value.qualityAutoHighest
+            carLyricEnabled = settings.settings.value.carLyricEnabled
+            carLyricFullLrc = settings.settings.value.carLyricFullLrc
             // 音质以设置为准：设置页改动即时生效（重解析当前曲，含自动降级）
             launch {
                 settings.settings.collect { s ->
+                    // 车机歌词开关变化：仅重写 metadata.extras，无需重解析音频
+                    if (s.carLyricEnabled != carLyricEnabled) {
+                        carLyricEnabled = s.carLyricEnabled
+                        carLyricExtrasClearedForKey = null
+                        carLyricTitleText = null
+                        refreshCarLyric()
+                    }
+                    // 「发送整首 LRC」开关变化：同样只需重写元数据（关闭时下一轮会清掉残留 extras）
+                    if (s.carLyricFullLrc != carLyricFullLrc) {
+                        carLyricFullLrc = s.carLyricFullLrc
+                        carLyricExtrasClearedForKey = null
+                        refreshCarLyric()
+                    }
+                    // 开关切换：重解析当前曲，让「按标定上限取档」立即生效
+                    if (s.qualityAutoHighest != autoHighest) {
+                        autoHighest = s.qualityAutoHighest
+                        reResolveCurrent(resolveQualityFor(_nowPlaying.value?.song ?: return@collect), announce = false)
+                        return@collect
+                    }
                     if (s.quality != _quality.value) {
                         _quality.value = s.quality
                         reResolveCurrent(s.quality, announce = false)
@@ -170,6 +282,7 @@ class PlayerConnection(
                     _connected.value = true
                     startTicker()
                     updateNowPlaying()
+                    startCarLyricSync()
                 }.onFailure {
                     _connected.value = false
                 }
@@ -189,6 +302,8 @@ class PlayerConnection(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             updateNowPlaying()
+            // 暂停时把外发标题从「当前歌词行」还原为歌名（与参考实现一致），恢复播放时再写回
+            syncBluetoothLyricTitle()
             if (!isPlaying) {
                 persistProgress()
                 persistSession()
@@ -223,8 +338,11 @@ class PlayerConnection(
      *    故解析完成后才提交控制器播放列表（提交前用 [pendingPlayCommit] 抑制旧队列事件回写）；
      * ③ 期间用户若又点了别的歌，本次解析结果直接作废（[playQueueSeq]），
      *    既不会出现「慢解析覆盖新点播」，也不会浪费一次音源请求之外的东西。
+     *
+     * @param autoPlay 是否解析完立即起播。局域网播放流转在发送端处于暂停态时传 `false`：
+     *   接收端应复现「暂停在同一进度」的画面，而不是擅自开始播放。
      */
-    fun playQueue(songs: List<Song>, startIndex: Int, startPositionMs: Long = 0L) {
+    fun playQueue(songs: List<Song>, startIndex: Int, startPositionMs: Long = 0L, autoPlay: Boolean = true) {
         if (songs.isEmpty()) return
         val song = songs.getOrNull(startIndex) ?: return
         val c = controller ?: run {
@@ -245,14 +363,13 @@ class PlayerConnection(
             isPlaying = false,
             isBuffering = true,
             durationMs = song.durationMs,
-            quality = _quality.value,
-            desiredQuality = _quality.value,
+            quality = resolveQualityFor(song),
+            desiredQuality = resolveQualityFor(song),
             repeatMode = c.repeatMode,
             shuffleEnabled = c.shuffleModeEnabled,
         )
-
         scope.launch {
-            val resolved = runCatching { repository.resolveForPlayback(song, _quality.value) }
+            val resolved = runCatching { repository.resolveForPlayback(song, resolveQualityFor(song)) }
                 .getOrElse { e ->
                     if (seq == playQueueSeq) {
                         // 解析失败：回滚乐观状态，UI 不得停在「假装正在播放」的假象上
@@ -278,11 +395,11 @@ class PlayerConnection(
             pendingPlayCommit = false
             c.setMediaItems(items, startIndex, startPositionMs)
             c.prepare()
-            c.play()
+            if (autoPlay) c.play()
 
             // 提交后与控制器对账一次：保证 UI 队列 = 真实播放队列
             _queue.value = QueueSnapshot(songs, startIndex)
-            actualQuality[resolved.song.stableKey] = resolved.quality
+            actualQuality.put(resolved.song.stableKey, resolved.quality)
             updateNowPlaying()
             history.recordStart(resolved.song)
             preloadNext(startIndex)
@@ -309,13 +426,108 @@ class PlayerConnection(
         if (session.songs.isEmpty()) return false
         val index = session.currentIndex.coerceIn(0, session.songs.lastIndex)
         val song = session.songs[index]
-        val position = if (song.durationMs > 0 && session.positionMs >= song.durationMs - 2000) {
-            0L
-        } else {
-            session.positionMs.coerceAtLeast(0L)
-        }
+        // 与局域网流转共用同一夹取规则（含「接近曲尾则从头」）
+        val position = normalizePosition(song, session.positionMs)
         playQueue(session.songs, index, position)
         return true
+    }
+
+    /* ---------------- 局域网播放流转 ---------------- */
+
+    /**
+     * 导出当前播放会话（队列 + 实时进度），供局域网播放流转发给对端。
+     *
+     * ## 为什么读控制器而不是持久化会话
+     *
+     * `sessionStore` 只在切歌 / 暂停 / 每 20 秒 tick 时落盘，**最多滞后 20 秒**。
+     * 用它做流转，用户在 A 听到 2:13、B 端却从 1:58 开始 —— 这种偏差用户一眼能看出，
+     * 且越是长时间连续播放越明显。控制器 `currentPosition` 才是此刻的真值。
+     *
+     * ## 暂停 / 队列未就绪时的语义
+     *
+     * - 无会话（未播过任何东西）→ 返回 null，调用方应提示「先播放一首歌」；
+     * - 暂停态：进度取控制器当前值（静止的），并把 `isPlaying = false` 传给对端；
+     * - 控制器的 duration 在未 prepare 时是 `C.TIME_UNSET`，用 [Song.durationMs] 兜底。
+     *
+     * 返回的对象是纯数据（可序列化），不持有控制器引用 —— 传输在 IO 线程进行，
+     * 不能把主线程状态带过去。
+     *
+     * @param fromAlias 本机显示名（对端用于提示「来自 xxx」）
+     */
+    fun exportHandoffSession(fromAlias: String): LanPlaybackPayload? {
+        val snapshot = _queue.value
+        if (snapshot.songs.isEmpty()) {
+            // 进程内无活跃队列时，回退到持久化会话（冷启动后尚未播放的场景）
+            val saved = sessionStore.session.value ?: return null
+            if (saved.songs.isEmpty()) return null
+            val index = saved.currentIndex.coerceIn(0, saved.songs.lastIndex)
+            return LanPlaybackPayload(
+                songs = saved.songs,
+                currentIndex = index,
+                positionMs = normalizePosition(saved.songs[index], saved.positionMs),
+                sentAtMs = System.currentTimeMillis(),
+                isPlaying = false,
+                fromAlias = fromAlias,
+            )
+        }
+
+        val c = controller
+        val index = (c?.currentMediaItemIndex ?: snapshot.currentIndex)
+            .coerceIn(0, snapshot.songs.lastIndex)
+        val song = snapshot.songs[index]
+        val playing = c?.isPlaying == true
+        val rawPosition = c?.currentPosition?.coerceAtLeast(0L) ?: _nowPlaying.value?.positionMs ?: 0L
+        return LanPlaybackPayload(
+            songs = snapshot.songs,
+            currentIndex = index,
+            positionMs = normalizePosition(song, rawPosition),
+            sentAtMs = System.currentTimeMillis(),
+            isPlaying = playing,
+            fromAlias = fromAlias,
+        )
+    }
+
+    /**
+     * 接收对端的播放流转：把队列与进度载入并接着播。
+     *
+     * ## 为什么要夹取而不是直接信任
+     *
+     * 对端可能是不同版本 / 不同实现，索引与进度都可能越界：
+     * - 索引越界 → `playQueue` 会静默 return，用户只看到「点了没反应」；
+     * - 进度 ≥ 曲长 → 播放器起播即到末尾，直接跳下一首，用户看到「跳过了这首歌」。
+     * 因此在这里统一夹取，且进度接近曲尾时归零（与 [resumeSession] 的策略一致：
+     * 差 2 秒内到头的曲子，从头听比听尾巴更合理）。
+     *
+     * ## 线程约定：调用方可以是任意线程
+     *
+     * 本方法由局域网接收端的 IO 协程调用，而 `playQueue` 里的队列序号、
+     * 乐观状态都必须在主线程维护（它们与控制器回调在同一线程才有意义）。
+     * 因此内部统一 `post` 到主线程，调用方无需关心。
+     *
+     * @return 实际载入的歌曲；队列为空时返回 null（调用方提示发送端没在播放）
+     */
+    fun receiveHandoff(payload: LanPlaybackPayload): Song? {
+        if (payload.songs.isEmpty()) return null
+        val index = payload.currentIndex.coerceIn(0, payload.songs.lastIndex)
+        val song = payload.songs[index]
+        val position = normalizePosition(song, payload.compensatedPositionMs())
+        // scope 是 Main.immediate：已在主线程时同步执行，否则排队
+        scope.launch { playQueue(payload.songs, index, position, autoPlay = payload.isPlaying) }
+        return song
+    }
+
+    /**
+     * 把进度夹到歌曲的合法区间内。
+     *
+     * 曲长未知（0）时无法夹取上界，只能保证非负 —— 此时宁可原样带过去，
+     * 也不要凭空造一个上限把用户的进度砍掉。
+     */
+    private fun normalizePosition(song: Song, positionMs: Long): Long {
+        val position = positionMs.coerceAtLeast(0L)
+        val duration = song.durationMs
+        if (duration <= 0L) return position
+        // 接近曲尾（差 2 秒内）视为已听完：从头开始，避免起播即跳下一首
+        return if (position >= duration - TAIL_TOLERANCE_MS) 0L else position
     }
 
     fun togglePlayPause() {
@@ -362,6 +574,59 @@ class PlayerConnection(
     fun toggleShuffle() {
         val c = controller ?: return
         c.shuffleModeEnabled = !c.shuffleModeEnabled
+    }
+
+    /**
+     * 在「随机 → 列表循环 → 单曲循环」之间轮换（供超级岛 / 通知等外部入口调用）。
+     *
+     * 为什么收敛成一个动作：外部入口（超级岛、通知栏）按钮位有限，
+     * 放三个按钮会挤掉更有价值的操作。轮换 + 图标反映当前态，是这类入口的通行做法。
+     *
+     * 规则（与 App 内循环按钮的语义一致）：
+     * - 当前**开启随机** → 关随机 + 置列表循环（`REPEAT_MODE_ALL`）；
+     * - 当前**列表循环** → 单曲循环（`REPEAT_MODE_ONE`）；
+     * - 其余（单曲循环 / 关） → 开随机（随机语义上覆盖顺序播放）。
+     *
+     * @return 轮换后的模式描述，供调用方做提示（如 Toast / 日志）
+     */
+    fun cyclePlayMode(): String {
+        val c = controller ?: return ""
+        return if (c.shuffleModeEnabled) {
+            c.shuffleModeEnabled = false
+            c.repeatMode = Player.REPEAT_MODE_ALL
+            "列表循环"
+        } else {
+            when (c.repeatMode) {
+                Player.REPEAT_MODE_ALL -> {
+                    c.repeatMode = Player.REPEAT_MODE_ONE
+                    "单曲循环"
+                }
+                else -> {
+                    c.repeatMode = Player.REPEAT_MODE_OFF
+                    c.shuffleModeEnabled = true
+                    "随机播放"
+                }
+            }
+        }
+    }
+
+    /** 当前播放模式（读自控制器；未连接时取快照） */
+    fun playMode(): PlayMode {
+        val c = controller
+        val shuffle = c?.shuffleModeEnabled ?: _nowPlaying.value?.shuffleEnabled ?: false
+        val repeat = c?.repeatMode ?: _nowPlaying.value?.repeatMode ?: Player.REPEAT_MODE_OFF
+        return when {
+            shuffle -> PlayMode.SHUFFLE
+            repeat == Player.REPEAT_MODE_ONE -> PlayMode.REPEAT_ONE
+            repeat == Player.REPEAT_MODE_ALL -> PlayMode.REPEAT_ALL
+            else -> PlayMode.SEQUENCE
+        }
+    }
+
+    /** 当前曲是否已收藏（供超级岛 / 通知的「喜欢」按钮渲染实心 / 空心）。 */
+    fun isCurrentFavorite(): Boolean {
+        val song = _nowPlaying.value?.song ?: return false
+        return favorites.favorites.value.any { it.stableKey == song.stableKey }
     }
 
     /**
@@ -436,7 +701,7 @@ class PlayerConnection(
             c.prepare()
             c.seekTo(index, position)
             if (wasPlaying) c.play()
-            actualQuality[song.stableKey] = resolved.quality
+            actualQuality.put(song.stableKey, resolved.quality)
             updateNowPlaying()
             if (announce) {
                 val msg = if (resolved.quality == quality) {
@@ -456,8 +721,8 @@ class PlayerConnection(
         val c = controller ?: return
         scope.launch {
             runCatching {
-                val resolved = repository.resolveForPlayback(song, _quality.value)
-                actualQuality[resolved.song.stableKey] = resolved.quality
+                val resolved = repository.resolveForPlayback(song, resolveQualityFor(song))
+                actualQuality.put(resolved.song.stableKey, resolved.quality)
                 registerSongs(listOf(resolved.song))
                 // 插入点统一以「播放器当前索引」为唯一基准：媒体项与队列列表必须同点插入，
                 // 否则两个列表一旦错位，后续切歌会出现「音频与歌曲信息错位」。
@@ -768,8 +1033,8 @@ class PlayerConnection(
         // 诊断：走到这里说明该槽位确实需要解析（槽位已就绪时会提前 return，不产生任何请求）
         AppLogger.d(TAG, "解析槽位 #$index「${song.title}」force=$force")
         return try {
-            val resolved = repository.resolveForPlayback(song, _quality.value, forceRefresh = force)
-            actualQuality[resolved.song.stableKey] = resolved.quality
+            val resolved = repository.resolveForPlayback(song, resolveQualityFor(song), forceRefresh = force)
+            actualQuality.put(resolved.song.stableKey, resolved.quality)
             // 槽位校验：解析期间队列可能被替换 / 插入过，禁止把结果写进已变化的槽位
             if (!slotStillMatches(index, expectedMediaId)) return false
             c.replaceMediaItem(index, resolved.song.toMediaItem(resolved.url))
@@ -801,8 +1066,8 @@ class PlayerConnection(
 
         scope.launch {
             runCatching {
-                val resolved = repository.resolveForPlayback(nextSong, _quality.value)
-                actualQuality[resolved.song.stableKey] = resolved.quality
+                val resolved = repository.resolveForPlayback(nextSong, resolveQualityFor(nextSong))
+                actualQuality.put(resolved.song.stableKey, resolved.quality)
                 // 槽位校验：解析期间队列可能被替换 / 插入过，禁止把结果写进已变化的槽位
                 if (!slotStillMatches(nextIndex, expectedMediaId)) return@runCatching
                 c.replaceMediaItem(nextIndex, resolved.song.toMediaItem(resolved.url))
@@ -848,8 +1113,8 @@ class PlayerConnection(
 
         scope.launch {
             try {
-                val resolved = repository.resolveForPlayback(song, _quality.value, forceRefresh = true)
-                actualQuality[resolved.song.stableKey] = resolved.quality
+                val resolved = repository.resolveForPlayback(song, resolveQualityFor(song), forceRefresh = true)
+                actualQuality.put(resolved.song.stableKey, resolved.quality)
                 // 槽位校验：解析期间队列可能已变化，避免把重试结果写进错误槽位
                 if (!slotStillMatches(index, expectedMediaId)) return@launch
                 c.replaceMediaItem(index, resolved.song.toMediaItem(resolved.url))
@@ -876,8 +1141,8 @@ class PlayerConnection(
         val epoch = queueEpoch
         scope.launch {
             try {
-                val resolved = repository.resolveForPlayback(song, _quality.value)
-                actualQuality[resolved.song.stableKey] = resolved.quality
+                val resolved = repository.resolveForPlayback(song, resolveQualityFor(song))
+                actualQuality.put(resolved.song.stableKey, resolved.quality)
                 if (epoch != queueEpoch) return@launch
                 if (!slotStillMatches(index, expectedMediaId)) return@launch
                 c.replaceMediaItem(index, resolved.song.toMediaItem(resolved.url))
@@ -898,6 +1163,8 @@ class PlayerConnection(
             var tick = 0L
             while (isActive) {
                 updateNowPlaying()
+                // 外发歌词跟随播放位置走：只有「当前歌词行」变化时才重建元数据（见 syncBluetoothLyricTitle）
+                syncBluetoothLyricTitle()
                 tick++
                 // 每 20 秒落盘一次播放会话（防进程被杀丢失队列 / 进度）
                 if (tick % 40 == 0L && controller?.isPlaying == true) persistSession()
@@ -931,8 +1198,8 @@ class PlayerConnection(
             durationMs = duration,
             repeatMode = c.repeatMode,
             shuffleEnabled = c.shuffleModeEnabled,
-            quality = actualQuality[song.stableKey] ?: _quality.value,
-            desiredQuality = _quality.value,
+            quality = actualQuality.get(song.stableKey) ?: _quality.value,
+            desiredQuality = resolveQualityFor(song),
         )
         // 队列高亮同步到预览目标：迷你条 / 播放页 / 队列页三处展示保持一致
         if (preview != null && snapshot.currentIndex != index) {
@@ -971,6 +1238,173 @@ class PlayerConnection(
         }
     }
 
+    // ---------------- 车载 / 蓝牙歌词 ----------------
+
+    /**
+     * 订阅全局歌词中心：当前曲歌词就绪（或缓存命中）时，把 `lyricInfo` JSON
+     * 重写进当前媒体项的 metadata，并通过 [MediaController.replaceMediaItem] 触发
+     * 时间线变更 → MediaSession 重新推送 metadata 给蓝牙 / 车机。
+     *
+     * 为什么不能只写一次：MediaItem 构造时歌词往往还没拉到（异步），
+     * 必须等歌词就绪后回写；否则车机侧永远拿不到歌词。
+     */
+    private fun startCarLyricSync() {
+        scope.launch {
+            // currentKey 在切歌时推送，lyrics 在歌词就绪时推送 —— 两者都要监听，
+            // 否则「歌词晚于切歌到达」的那次更新会被漏掉。
+            combine(LyricsHub.currentKey, LyricsHub.lyrics) { key, _ -> key }
+                .collect { key ->
+                    if (carLyricEnabled && key.isNotEmpty()) {
+                        refreshCarLyric(delayMs = CAR_LYRIC_HUB_DELAY_MS)
+                    }
+                }
+        }
+    }
+
+    /**
+     * 按播放位置把「当前歌词行」同步进媒体元数据标题（车载 / 蓝牙歌词的主通道）。
+     *
+     * 由 500ms 的 [startTicker] 与播放态变化回调驱动，**必须极廉价**并且**必须自带去重**：
+     * 只有歌词文本真正变化时才重建媒体项，否则每 500ms 都会产生一次跨进程元数据刷新。
+     *
+     * 文本计算与刷新共用一个 `runCatching`：任何异常都不允许打断 ticker
+     * （ticker 一旦抛错就退出循环，播放进度推送会整条停摆）。
+     */
+    private fun syncBluetoothLyricTitle() {
+        if (!carLyricEnabled) return
+        runCatching {
+            val song = _nowPlaying.value?.song ?: return
+            // 期望值必须与 [metadata] 的派生规则**完全相同**，否则记账值会与实际写入的标题分叉，
+            // 导致去重误判（该刷新时不刷新 / 反复空刷新）
+            val desired = song.bluetoothTitle(LyricsHub.lyrics.value.takeIf {
+                LyricsHub.currentKey.value == song.stableKey
+            })
+            if (desired == carLyricTitleText) return
+            refreshCarLyric()
+            carLyricTitleText = desired
+        }.onFailure {
+            AppLogger.w(TAG, "外发歌词同步失败: ${it.message}")
+        }
+    }
+
+    /**
+     * 外发标题：播放中取当前歌词行，否则取歌名。
+     *
+     * 与两家参考实现的行为一致 —— 暂停时还原歌名；无歌词、歌词未就绪、歌词行是空行
+     * （前奏 / 间奏的 LRC 空行）时同样回落到歌名。`null` 与空白行都走这条回落路径，
+     * 保证「标题」与「记账值」由同一个纯函数派生，不会出现两套规则互相打架。
+     */
+    private fun Song.bluetoothTitle(lyrics: SongLyrics?): String {
+        if (_nowPlaying.value?.isPlaying != true) return title
+        if (lyrics == null) return title
+        val position = controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
+        val line = ExternalBluetoothLyrics.currentLine(lyrics, position)
+        return ExternalBluetoothLyrics.titleText(line) ?: title
+    }
+
+    /**
+     * 用当前状态重建所在槽位的媒体项（标题 + extras 按最新歌词重新生成）。
+     *
+     * 用当前槽位的真实地址重建整个 [MediaItem]：mediaId / uri 均不变，因此
+     * ProgressiveMediaSource 的 `canUpdateMediaItem` 成立 → ExoPlayer 就地更新媒体项，
+     * **不会重建 MediaSource、不会中断正在播放的音频**；新的 metadata 会被 MediaSession
+     * 重新推送（蓝牙 / 车机据此拿到歌词）。写入前校验槽位未变化，避免把歌词写到
+     * 已切走的曲目上。
+     *
+     * 唯一的例外是「关闭整首 LRC 后清残留 extras」：那一次必须重建媒体项，
+     * 因为 extras 只能靠替换媒体项来变更。
+     */
+    private fun refreshCarLyric(delayMs: Long = 0L) {
+        carLyricJob?.cancel()
+        carLyricJob = scope.launch {
+            if (delayMs > 0) delay(delayMs)
+            val c = controller ?: return@launch
+            val index = c.currentMediaItemIndex
+            if (index < 0 || index >= c.mediaItemCount) return@launch
+            val current = runCatching { c.getMediaItemAt(index) }.getOrNull() ?: return@launch
+            val song = songIndex[current.mediaId] ?: _queue.value.songs.getOrNull(index) ?: return@launch
+            // 关闭「发送整首 LRC」后必须把上一首残留的 MIUI 键抹掉（否则车机 / 锁屏会一直显示旧歌词）。
+            // 每首歌只需清一次：若每个无变化 tick 都重建媒体项，会产生持续的跨进程元数据刷新，白白耗电。
+            val needsExtrasClear = !(carLyricEnabled && carLyricFullLrc) &&
+                carLyricExtrasClearedForKey != current.mediaId &&
+                current.mediaMetadata.extras?.containsKey(CarLyricInfo.KEY_MIUI) == true
+            // 用当前槽位的真实地址重建整项：mediaId / uri 均不变，
+            // 因此 ProgressiveMediaSource 的 canUpdateMediaItem 成立（不重建 MediaSource、
+            // 不打断播放），同时 metadata 会按最新歌词重新生成。
+            val uri = current.localConfiguration?.uri?.toString().orEmpty()
+            if (uri.isEmpty()) return@launch
+            val newItem = song.toMediaItem(uri)
+
+            // 槽位校验：异步窗口内若已切歌 / 队列被替换，则放弃本次写入
+            if (c.currentMediaItemIndex != index) return@launch
+            val stillSame = runCatching { c.getMediaItemAt(index).mediaId == current.mediaId }.getOrDefault(false)
+            if (!stillSame) return@launch
+            runCatching { c.replaceMediaItem(index, newItem) }
+            if (needsExtrasClear) carLyricExtrasClearedForKey = current.mediaId
+        }
+    }
+
+    /**
+     * 异步准备封面字节；就绪后重建当前媒体项，让系统媒体中心拿到封面。
+     *
+     * 去重：同一首曲目只会有一个下载在飞（[artworkPending]）—— `metadata()` 会被
+     * 500ms 的 ticker 反复调用（每次歌词行变化都重建媒体项），不能每次都发起下载。
+     */
+    private fun requestArtworkBytes(key: String, url: String) {
+        val shouldStart = synchronized(artworkPending) { artworkPending.add(key) }
+        if (!shouldStart) return
+        scope.launch {
+            val bytes = runCatching { downloadArtworkBytes(url) }.getOrNull()
+            synchronized(artworkPending) { artworkPending.remove(key) }
+            if (bytes == null) return@launch
+            synchronized(artworkBytes) { artworkBytes[key] = bytes }
+            // 只在「这首仍是当前曲」时重建：否则会把封面写到已经切走的槽位上
+            if (_nowPlaying.value?.song?.stableKey == key) refreshCarLyric()
+        }
+    }
+
+    /**
+     * 下载封面并压成小尺寸 JPEG 字节。
+     *
+     * 两个硬约束：
+     * 1. 必须带 App 统一 UA —— 封面 CDN 会拒绝 Java 默认的 `Dalvik/...`（403）；
+     * 2. 必须压到几十 KB —— 这份字节会随 metadata 广播**跨进程传输**，
+     *    原图（1MB+）既拖慢广播又可能触发 Binder 事务超限。
+     */
+    private suspend fun downloadArtworkBytes(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", Http.DEFAULT_UA)
+            .build()
+        Http.client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                AppLogger.w(TAG, "封面下载失败: HTTP ${resp.code}")
+                return@withContext null
+            }
+            val raw = resp.body?.bytes() ?: return@withContext null
+            if (raw.isEmpty()) return@withContext null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+            val minSide = minOf(bounds.outWidth, bounds.outHeight)
+            var sample = 1
+            while (minSide / (sample * 2) >= ARTWORK_MAX_PX) sample *= 2
+            val bmp = BitmapFactory.decodeByteArray(
+                raw,
+                0,
+                raw.size,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                },
+            ) ?: return@withContext null
+            ByteArrayOutputStream().use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, ARTWORK_JPEG_QUALITY, out)
+                bmp.recycle()
+                out.toByteArray()
+            }
+        }
+    }
+
     // ---------------- MediaItem 构造 ----------------
 
     private fun Song.toMediaItem(url: String): MediaItem = MediaItem.Builder()
@@ -985,18 +1419,98 @@ class PlayerConnection(
         .setMediaMetadata(metadata())
         .build()
 
-    private fun Song.metadata(): MediaMetadata = MediaMetadata.Builder()
-        .setTitle(title)
-        .setArtist(artist)
-        .setAlbumTitle(album)
-        .apply { if (coverUrl.isNotBlank()) setArtworkUri(Uri.parse(coverUrl)) }
-        .build()
+    /**
+     * 构造媒体元数据：标题承载外发歌词，extras 承载整首歌词（可选）。
+     *
+     * **标题**是车载 / 蓝牙歌词的唯一有效通道（AVRCP 标准元数据），与 NeriPlayer、
+     * Melodia 的做法一致：
+     * - 已暂停 → 歌名（与参考实现在暂停时还原标题的行为一致，也让暂停态一眼能认出曲目）；
+     * - 播放中且有当前歌词行 → 该行文本；
+     * - 播放中但无歌词 / 歌词未就绪 → 歌名。
+     *
+     * 歌词行取自 ticker 写入媒体项时的播放位置 —— 媒体项重建本身就是按歌词行触发的，
+     * 因此这里读到的位置与触发时的位置一致（500ms 采样，对歌词显示足够）。
+     *
+     * **extras** 是否写入由 [carLyricFullLrc] 决定，且只在两种前提同时成立时才写：
+     * 1. [carLyricEnabled] 已开启；
+     * 2. 本曲正是当前曲（`LyricsHub.currentKey == stableKey`）——「下一首预热」的
+     *    占位项因不是当前曲而恒不带 extras，其歌词会在真正起播后由 [refreshCarLyric] 补上。
+     */
+    private fun Song.metadata(): MediaMetadata {
+        val lyrics = if (carLyricEnabled && LyricsHub.currentKey.value == stableKey) {
+            LyricsHub.lyrics.value
+        } else {
+            null
+        }
+        return MediaMetadata.Builder()
+            .setTitle(bluetoothTitle(lyrics))
+            .setArtist(artist)
+            .setAlbumTitle(album)
+            .apply {
+                if (coverUrl.isNotBlank()) {
+                    val bytes = synchronized(artworkBytes) { artworkBytes[stableKey] }
+                    if (bytes != null) {
+                        // 首选：把封面**字节**直接嵌进 metadata。
+                        // 系统媒体中心（HyperOS 媒体胶囊 / 车机 / 锁屏 / 蓝牙）读不到我们 App 的
+                        // 网络请求头，给它一个需要 UA / Referer 的 http URL 等于给它一个加载不了的
+                        // 封面 —— 系统日志里就是那句「Only Title and Artist info sync for metadata」。
+                        setArtworkData(bytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                    } else {
+                        // 未就绪：先用 URI 兜底（部分系统能自行加载），并触发异步下载；
+                        // 字节就绪后会重建媒体项补上 artworkData。
+                        setArtworkUri(Uri.parse(coverUrl))
+                        requestArtworkBytes(stableKey, coverUrl)
+                    }
+                }
+            }
+            .setExtras(
+                CarLyricInfo.extrasFor(
+                    song = this,
+                    lyrics = lyrics,
+                    // lyricInfo 与标题同属「蓝牙 / 车机歌词」，跟随主开关；未启用时返回 null → 清掉旧 extras
+                    enabled = carLyricEnabled,
+                    // 与标题同源：暂停 / 无歌词时回落为歌名，避免 extras 与标题自相矛盾
+                    currentLine = bluetoothTitle(lyrics).takeIf { it != title },
+                    // 整首 LRC 是另一条通道（只对读 extras 的组件有意义），单独开关
+                    fullLrc = carLyricFullLrc,
+                ),
+            )
+            .build()
+    }
+
+    /** 外发标题：播放中取当前歌词行，否则取歌名（无歌词时自然回落到歌名）。 */
+    private fun Song.bluetoothTitle(lyrics: SongLyrics?, positionMs: Long): String {
+        if (_nowPlaying.value?.isPlaying != true) return title
+        val line = ExternalBluetoothLyrics.currentLine(lyrics ?: SongLyrics.EMPTY, positionMs)
+        return ExternalBluetoothLyrics.titleText(line) ?: title
+    }
 
     companion object {
         private const val TAG = "PlayerConnection"
 
+        /** 系统媒体中心封面缓存容量（首） */
+        private const val ARTWORK_CACHE_MAX = 8
+
+        /** 嵌进 metadata 的封面最大边长（px）：媒体胶囊 / 车机显示尺寸小，256 足够 */
+        private const val ARTWORK_MAX_PX = 256
+
+        /** 嵌进 metadata 的封面 JPEG 质量：体积与观感的平衡点（256px 下约 15-25KB） */
+        private const val ARTWORK_JPEG_QUALITY = 80
+
         /** 队列歌曲索引容量上限（FIFO 淘汰；远超任何实际队列长度） */
         private const val MAX_SONG_INDEX = 500
+
+        /** 实际音质记录的容量上限（见 `actualQuality` 注释） */
+        private const val MAX_ACTUAL_QUALITY = 2000
+
+        /**
+         * 距曲尾多近就算「已听完」（ms）。
+         *
+         * 同时用于播放会话恢复与局域网流转：这类曲子的进度要么来自落盘快照、
+         * 要么来自对端（还叠加了网络耗时补偿），落在曲尾 2 秒内起播只会立刻跳下一首。
+         * 与 [resumeSession] 的判据保持一致，避免同一个场景两种表现。
+         */
+        private const val TAIL_TOLERANCE_MS = 2_000L
 
         /**
          * 切歌防抖窗口（ms）：**仅用于滤除同帧重复触发**（例如按键与手势同时上报），
@@ -1031,6 +1545,14 @@ class PlayerConnection(
          * 在下一次采样时恰好追平真实进度），调整此值时歌词侧自动适配。
          */
         const val TICK_MS = 500L
+
+        /**
+         * 车机歌词订阅 LyricsHub 后的落库延迟（ms）。
+         *
+         * LyricsHub 先推 currentKey（新曲）再推可用歌词；此延迟让「歌词就绪」的推送
+         * 也能被捕获，并且不与正在进行的切歌提交抢时序。
+         */
+        private const val CAR_LYRIC_HUB_DELAY_MS = 150L
     }
 
 }

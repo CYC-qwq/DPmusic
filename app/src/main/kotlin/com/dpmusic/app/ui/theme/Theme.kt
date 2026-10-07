@@ -131,9 +131,16 @@ fun DPmusicTheme(
 /**
  * 主题过渡：单一进度驱动 + 逐槽位 lerp。
  * 相比 48 个独立颜色动画：每帧仅 1 次状态写入 / 1 个动画协程，开销更低、中途打断更平滑。
+ *
+ * [durationMillis] 默认走全局主题时长；播放页的「封面动态取色」按同一套机制换色，
+ * 只是节奏略缓（切歌换色比主题切换更适合慢一点）。
  */
 @Composable
-private fun animateColorScheme(key: Any, target: ColorScheme): ColorScheme {
+internal fun animateColorScheme(
+    key: Any,
+    target: ColorScheme,
+    durationMillis: Int = ThemeTransitionMillis,
+): ColorScheme {
     val progress = remember { Animatable(1f) }
     var fromScheme by remember { mutableStateOf(target) }
     var toScheme by remember { mutableStateOf(target) }
@@ -153,7 +160,7 @@ private fun animateColorScheme(key: Any, target: ColorScheme): ColorScheme {
         progress.snapTo(0f)
         progress.animateTo(
             targetValue = 1f,
-            animationSpec = tween(durationMillis = ThemeTransitionMillis, easing = FastOutSlowInEasing),
+            animationSpec = tween(durationMillis = durationMillis, easing = FastOutSlowInEasing),
         )
     }
 

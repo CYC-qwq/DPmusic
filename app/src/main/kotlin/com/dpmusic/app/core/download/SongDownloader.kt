@@ -93,7 +93,7 @@ class SongDownloader(
                 onProgress(0f, 0L, 0L, "「${target.label}」不可用，已降级为「${resolved.quality.label}」")
             }
 
-            val file = uniqueFile(dir, baseName(resolved.song), guessExtension(resolved.url, resolved.quality))
+            val file = uniqueFile(dir, baseName(resolved.song), guessExtension(resolved.url, resolved.quality, resolved.song.platform))
             try {
                 downloadBytes(resolved.url, file, refererFor(resolved.song.platform), onProgress)
             } catch (e: CancellationException) {
@@ -223,12 +223,16 @@ class SongDownloader(
         return candidate
     }
 
-    private fun guessExtension(url: String, quality: PlayQuality): String {
+    private fun guessExtension(url: String, quality: PlayQuality, platform: MusicPlatform? = null): String {
         val path = url.substringBefore('?').substringBefore('#')
         val ext = path.substringAfterLast('.', "").lowercase()
         if (ext in KNOWN_EXTS) return ext
+        // 汽水（h5/seo_track）为 m4a/AAC 容器，URL 无扩展名
+        if (platform == MusicPlatform.QS) return "m4a"
         return when (quality) {
-            PlayQuality.LOSSLESS, PlayQuality.FLAC24, PlayQuality.HIRES -> "flac"
+            PlayQuality.LOSSLESS, PlayQuality.FLAC24, PlayQuality.HIRES,
+            PlayQuality.ATMOS, PlayQuality.ATMOS_PLUS, PlayQuality.MASTER,
+            -> "flac"
             else -> "mp3"
         }
     }
@@ -237,6 +241,9 @@ class SongDownloader(
         MusicPlatform.WY -> "https://music.163.com/"
         MusicPlatform.QQ -> "https://y.qq.com/"
         MusicPlatform.KG -> "https://www.kugou.com/"
+        MusicPlatform.QS -> "https://www.douyin.com/"
+        // B 站音频流做防盗链，下载时同样必须带 Referer
+        MusicPlatform.BB -> "https://www.bilibili.com/"
     }
 
     private companion object {

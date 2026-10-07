@@ -148,6 +148,12 @@ fun SongRow(
                     Spacer(Modifier.width(6.dp))
                     PlatformBadge(platform = song.platform)
                 }
+                if (display.showQuality) {
+                    song.ceilingQuality?.let { q ->
+                        Spacer(Modifier.width(4.dp))
+                        QualityBadge(quality = q)
+                    }
+                }
             }
             Spacer(Modifier.height(2.dp))
             Text(

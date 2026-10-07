@@ -248,6 +248,9 @@ fun AppNavHost(
                 onOpenSources = { navController.navigate(SourceManagerRoute) },
                 onOpenDownloadManager = { navController.navigate(DownloadManagerRoute) },
                 onOpenSync = { navController.navigate(SyncRoute) },
+                onOpenQishuiPlaylist = { id, title ->
+                    navController.navigate(PlaylistDetailRoute(platform = "qs", playlistId = id, title = title))
+                },
             )
         }
 

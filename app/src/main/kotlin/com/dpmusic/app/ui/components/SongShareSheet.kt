@@ -299,6 +299,9 @@ private fun officialUrl(song: Song): String = when (song.platform) {
     MusicPlatform.WY -> "https://music.163.com/#/song?id=${song.id}"
     MusicPlatform.QQ -> "https://y.qq.com/n/ryqq/songDetail/${song.id}"
     MusicPlatform.KG -> "https://www.kugou.com/song/#hash=${song.id}"
+    // 汽水官方 H5 曲目页（实测 seo_track 下发的 seo_url）
+    MusicPlatform.QS -> "https://www.douyin.com/qishui/song/${song.id}"
+    MusicPlatform.BB -> "https://www.bilibili.com/video/${song.id}"
 }
 
 /** 组合分享文本：分享描述 + 歌名歌手 + 带标签的链接（仅包含需要的部分） */

@@ -1,5 +1,6 @@
 package com.dpmusic.app.ui.screens.search
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,7 +50,9 @@ import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -624,6 +627,9 @@ private fun SearchIdlePanels(
 
 /* ---------------- 搜索历史 ---------------- */
 
+/** 单次最多展示的历史词条：超出部分折叠，避免十几条历史把首屏塞满（收纳） */
+private const val HISTORY_COLLAPSED_COUNT = 8
+
 /** 搜索历史面板：标题行（清空）+ 流式词条（点按搜索 / 点 × 删除单条）。滚动由外层统一负责。 */
 @Composable
 private fun SearchHistoryPanel(
@@ -633,6 +639,11 @@ private fun SearchHistoryPanel(
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 历史可能很长：默认只铺 8 条，其余收起，一键展开 —— 保持首屏整洁与对齐
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val overflow = history.size > HISTORY_COLLAPSED_COUNT
+    val shown = if (expanded || !overflow) history else history.take(HISTORY_COLLAPSED_COUNT)
+
     Column(
         // 注意：这里**不能**加 LocalBottomBarInset —— 它不是屏幕最底部（下面还有热搜榜）。
         // 底部 inset 由外层 SearchIdlePanels 统一加一次，否则会出现大块死空白。
@@ -648,16 +659,27 @@ private fun SearchHistoryPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.weight(1f))
+            if (overflow) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(
+                        text = if (expanded) "收起" else "全部 ${history.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
             TextButton(onClick = onClear) {
                 Text("清空", style = MaterialTheme.typography.labelMedium)
             }
         }
+        // 词条增减（展开 / 删除单条）时容器尺寸平滑过渡，不跳变
         FlowRow(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            history.forEach { keyword ->
+            shown.forEach { keyword ->
                 HistoryChip(
                     keyword = keyword,
                     onPick = { onPick(keyword) },

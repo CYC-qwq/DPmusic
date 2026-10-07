@@ -30,9 +30,11 @@ import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed as staggeredI
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.EmojiEvents
+import androidx.compose.material.icons.outlined.Radio
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -53,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,7 +69,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dpmusic.app.AppContainer
 import com.dpmusic.app.AppViewModelFactory
+import com.dpmusic.app.core.data.toplistPlatforms
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.RankSummary
 import com.dpmusic.app.core.model.Song
@@ -99,6 +104,7 @@ import com.dpmusic.app.ui.util.panelShowsExtras
 import com.dpmusic.app.ui.util.sidePaneWidth
 import com.dpmusic.app.ui.theme.glassPanelColor
 import com.dpmusic.app.ui.theme.LocalBottomBarInset
+import kotlinx.coroutines.launch
 
 /**
  * 排行榜页：
@@ -111,6 +117,16 @@ fun RankScreen(
     windowSizeClass: WindowSizeClass,
     onOpenSettings: () -> Unit,
     onOpenRankDetail: (RankSummary) -> Unit,
+    /**
+     * 汽水「榜单」实为**场景电台**（图书馆 / 专注 / 深夜 EMO…）。
+     *
+     * 它是**电台**而非歌单：曲目流由 [AppContainer.qishuiRadio] 持续续杯。
+     * 若走通用「榜单详情页」把曲目静态列出来，就只剩当场抽到的几首、
+     * 丢掉了「一直播下去」这一本质 —— 因此这里直接起播电台。
+     */
+    onStartQishuiRadio: (id: String, name: String) -> Unit = { id, name ->
+        AppContainer.qishuiRadio.start(id, name)
+    },
 ) {
     val vm: RankViewModel = viewModel(factory = AppViewModelFactory)
     val compact = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Compact
@@ -124,9 +140,22 @@ fun RankScreen(
     val ranks by vm.ranks.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
+    // 榜单页只列「已启用且平台本身提供榜单」的音源（汽水/ B 站恒无榜单，不在此出现）
+    val settingsState by AppContainer.settings.settings.collectAsStateWithLifecycle()
+    val toplistPlatforms = settingsState.toplistPlatforms()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val addHost = rememberAddToPlaylistHost()
+    val scope = rememberCoroutineScope()
+    // 点击分流：汽水场景电台 → 直接起播（持续续杯）；其余 → 通用榜单详情页
+    val onRankClick: (RankSummary) -> Unit = { rank ->
+        if (rank.platform == MusicPlatform.QS) {
+            onStartQishuiRadio(rank.id, rank.name)
+            scope.launch { snackbarHostState.showSnackbar("已开启「${rank.name}」场景电台") }
+        } else {
+            onOpenRankDetail(rank)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -139,6 +168,7 @@ fun RankScreen(
                         PlatformChips(
                             selected = platform,
                             onSelect = vm::onPlatformChange,
+                            platforms = toplistPlatforms,
                         )
                     }
                     IconButton(onClick = onOpenSettings) {
@@ -158,6 +188,7 @@ fun RankScreen(
                 PlatformChips(
                     selected = platform,
                     onSelect = vm::onPlatformChange,
+                    platforms = toplistPlatforms,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -169,7 +200,7 @@ fun RankScreen(
                     loading = loading,
                     error = error,
                     onRetry = vm::loadRanks,
-                    onRankClick = onOpenRankDetail,
+                    onRankClick = onRankClick,
                     gridState = gridState,
                     columns = StaggeredGridCells.Fixed(2),
                     modifier = Modifier.weight(1f),
@@ -188,7 +219,14 @@ fun RankScreen(
                         loading = loading,
                         error = error,
                         onRetry = vm::loadRanks,
-                        onRankClick = vm::selectRank,
+                        onRankClick = { rank ->
+                            if (rank.platform == MusicPlatform.QS) {
+                                onStartQishuiRadio(rank.id, rank.name)
+                                scope.launch { snackbarHostState.showSnackbar("已开启「${rank.name}」场景电台") }
+                            } else {
+                                vm.selectRank(rank)
+                            }
+                        },
                         selectedRankId = selectedRank?.id,
                         gridState = gridState,
                         columns = StaggeredGridCells.Adaptive(minSize = 140.dp),
@@ -237,6 +275,15 @@ private fun RankGrid(
                 icon = Icons.Outlined.EmojiEvents,
                 title = "该平台暂无榜单数据",
             )
+            // 该平台榜单**本身不带封面图**（汽水场景电台）→ 用列表行呈现。
+            // 网格是「封面驱动」的排版：没有图就会有大量空白，无论怎么填都像坏图。
+            // 列表行以文字为主、小图标为辅，是这类「纯文字条目」的正确形态。
+            ranks.all { it.coverUrl.isBlank() } -> RankList(
+                ranks = ranks,
+                onRankClick = onRankClick,
+                selectedRankId = selectedRankId,
+                modifier = Modifier.fillMaxSize(),
+            )
             else -> LazyVerticalStaggeredGrid(
                 state = gridState,
                 columns = columns,
@@ -258,6 +305,106 @@ private fun RankGrid(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 无封面平台的榜单列表（当前用于汽水场景电台）。
+ *
+ * 与 [RankCard] 的分工：那张卡是「一张封面 + 压在图上的标题」，适合有图的内容；
+ * 这里是「一个图标 + 标题 + 说明 + 右侧箭头」的标准列表行，适合纯文字条目。
+ *
+ * 汽水场景用一方**低饱和色块 + 电台图标**（不是整块填充），既与网格里的封面卡片
+ * 区分开，也不会变成一堵彩色墙。
+ */
+@Composable
+private fun RankList(
+    ranks: List<RankSummary>,
+    onRankClick: (RankSummary) -> Unit,
+    selectedRankId: String?,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        itemsIndexed(
+            items = ranks,
+            key = { _, rank -> rank.stableId },
+        ) { index, rank ->
+            RankListRow(
+                rank = rank,
+                selected = rank.id == selectedRankId,
+                onClick = { onRankClick(rank) },
+                modifier = Modifier.staggeredEntrance(index = index, enabled = index < 12),
+            )
+        }
+    }
+}
+
+/** 列表行：色块图标 + 标题 / 说明 + 右箭头 */
+@Composable
+private fun RankListRow(
+    rank: RankSummary,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            glassPanelColor(MaterialTheme.colorScheme.surfaceContainer)
+        },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 场景图标：品牌色低透明度圆角块 + 电台图标（不使用渐变，避免"假封面"感）
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(Color(rank.platform.brandColor).copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Radio,
+                    contentDescription = null,
+                    tint = Color(rank.platform.brandColor),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = rank.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val sub = rank.updateFrequency.ifBlank { "点开即播" }
+                Text(
+                    text = sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }
@@ -488,6 +635,14 @@ fun RankDetailScreen(
     var filter by rememberSaveable { mutableStateOf("") }
     val filteredSongs = remember(songs, filter) { filterSongs(songs, filter) }
     val allKeys = remember(filteredSongs) { filteredSongs.map { it.stableKey } }
+    // 汽水场景电台：它不是静态歌单，深链 / 热榜卡片进来时也要给「起播电台」的出口，
+    // 否则用户只能看到当场抽到的几首，丢掉「一直播下去」的本质。
+    val scope = rememberCoroutineScope()
+    val isQishuiRadio = platform == MusicPlatform.QS
+    val startRadio: () -> Unit = {
+        AppContainer.qishuiRadio.start(route.rankId, route.title)
+        scope.launch { snackbarHostState.showSnackbar("已开启「${route.title}」场景电台") }
+    }
 
     val message by vm.message.collectAsStateWithLifecycle()
     LaunchedEffect(message) {
@@ -532,17 +687,20 @@ fun RankDetailScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     PillButton(
-                        text = "全部播放",
+                        // 汽水场景：不是「播放这 N 首」，而是「开播电台」（持续续杯）
+                        text = if (isQishuiRadio) "开播电台" else "全部播放",
                         icon = Icons.Filled.PlayArrow,
-                        onClick = vm::playAll,
+                        onClick = if (isQishuiRadio) startRadio else vm::playAll,
                     )
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { vm.saveAsPlaylist(route.title) }) {
-                        Text("存为歌单")
+                    if (!isQishuiRadio) {
+                        OutlinedButton(onClick = { vm.saveAsPlaylist(route.title) }) {
+                            Text("存为歌单")
+                        }
+                        Spacer(Modifier.width(12.dp))
                     }
-                    Spacer(Modifier.width(12.dp))
                     Text(
-                        text = "${songs.size} 首 · ${platform.label}",
+                        text = if (isQishuiRadio) "场景电台 · 自动续播" else "${songs.size} 首 · ${platform.label}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

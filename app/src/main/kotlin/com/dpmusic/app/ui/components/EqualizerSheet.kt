@@ -103,9 +103,17 @@ fun EqualizerSheet(onDismiss: () -> Unit) {
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = if (state.attached) "已挂载当前播放会话 · 即时生效" else "播放音乐后自动生效",
+                        text = when {
+                            state.bypassedByBitPerfect -> "USB 独占（Bit-Perfect）开启中 · 均衡器已强制旁路"
+                            state.attached -> "已挂载当前播放会话 · 即时生效"
+                            else -> "播放音乐后自动生效"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (state.bypassedByBitPerfect) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
                 Switch(
@@ -133,7 +141,11 @@ fun EqualizerSheet(onDismiss: () -> Unit) {
                         color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f),
                     ) {
                         Text(
-                            text = "播放任意歌曲后，这里会出现可拖动的频段推子与响应曲线",
+                            text = if (state.bypassedByBitPerfect) {
+                                "USB 独占（Bit-Perfect）开启期间，均衡器被强制旁路以保证位完美直通；关闭独占后立即恢复"
+                            } else {
+                                "播放任意歌曲后，这里会出现可拖动的频段推子与响应曲线"
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),

@@ -766,10 +766,15 @@ private fun accountPlatformLabel(platform: MusicPlatform): String = when (platfo
     MusicPlatform.WY -> "网易云音乐"
     MusicPlatform.QQ -> "QQ 音乐"
     MusicPlatform.KG -> "酷狗音乐"
+    MusicPlatform.QS -> "汽水音乐"
+    MusicPlatform.BB -> "哔哩哔哩"
 }
 
 private fun accountPlaylistLink(platform: MusicPlatform, playlistId: String): String = when (platform) {
     MusicPlatform.WY -> "https://music.163.com/playlist?id=$playlistId"
     MusicPlatform.QQ -> "https://y.qq.com/n/ryqq/playlist/$playlistId"
     MusicPlatform.KG -> "https://www.kugou.com/yy/special/single/$playlistId.html"
+    MusicPlatform.QS -> "https://www.douyin.com/qishui/playlist/$playlistId"
+    // B 站无「账号歌单」概念，链接指向收藏夹
+    MusicPlatform.BB -> "https://www.bilibili.com/medialist/detail/ml$playlistId"
 }

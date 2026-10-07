@@ -17,10 +17,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -35,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpmusic.app.AppViewModelFactory
+import com.dpmusic.app.core.lansync.LanDevice
 import com.dpmusic.app.ui.components.DpTopAppBar
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -73,8 +77,20 @@ fun SyncScreen(
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
+    val lanDevices by vm.lanDevices.collectAsStateWithLifecycle()
+    val lanScanning by vm.lanScanning.collectAsStateWithLifecycle()
+    val lanMessage by vm.lanMessage.collectAsStateWithLifecycle()
+    val lanServerRunning by vm.lanServerRunning.collectAsStateWithLifecycle()
+    val lanAddresses by vm.lanLocalAddresses.collectAsStateWithLifecycle()
+
     var confirmAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     val enabled = settings.webdavEnabled
+
+    // 局域网发现只在页面可见时进行；离开时只断开事件回调（接收端常驻，不受页面影响）
+    DisposableEffect(Unit) {
+        vm.onEnterLanSection()
+        onDispose { vm.onLeaveLanSection() }
+    }
 
     Scaffold(
         topBar = {
@@ -99,6 +115,32 @@ fun SyncScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            item {
+                LanSyncSection(
+                    alias = settings.lanSyncAlias,
+                    pin = settings.lanSyncPin,
+                    port = settings.lanSyncPort.toString(),
+                    serverRunning = lanServerRunning,
+                    scanning = lanScanning,
+                    devices = lanDevices,
+                    localAddresses = lanAddresses,
+                    message = lanMessage,
+                    onAliasChange = vm::setLanSyncAlias,
+                    onPinChange = vm::setLanSyncPin,
+                    onPortChange = vm::setLanSyncPort,
+                    onServerEnabledChange = vm::setLanServerEnabled,
+                    onScan = vm::scanLanDevices,
+                    onSend = { device, includeSettings, includeLists ->
+                        val scope = buildString {
+                            if (includeSettings) append("「设置与音源」")
+                            if (includeLists) append(if (isEmpty()) "「歌单与数据」" else " + 「歌单与数据」")
+                        }
+                        confirmAction = "将把本机的 $scope 推送给「${device.displayName}」，覆盖对方现有数据，不可撤销。" to {
+                            vm.sendToLanDevice(device, includeSettings, includeLists)
+                        }
+                    },
+                )
+            }
             item {
                 ServerCard(
                     enabled = enabled,
@@ -323,6 +365,141 @@ private fun StatusCard(
                 },
             )
         }
+    }
+}
+
+/**
+ * 局域网设备同步区块（LocalSend 协议 v2.2）：
+ * - 本机身份（显示名 / 端口 / PIN）；
+ * - 「允许其他设备向我发送数据」= 接收端开关（仅本页停留期间监听）；
+ * - 设备列表 + 扫描；每台设备可推送「设置与音源 / 歌单与数据」。
+ */
+@Composable
+private fun LanSyncSection(
+    alias: String,
+    pin: String,
+    port: String,
+    serverRunning: Boolean,
+    scanning: Boolean,
+    devices: List<LanDevice>,
+    localAddresses: List<String>,
+    message: String?,
+    onAliasChange: (String) -> Unit,
+    onPinChange: (String) -> Unit,
+    onPortChange: (String) -> Unit,
+    onServerEnabledChange: (Boolean) -> Unit,
+    onScan: () -> Unit,
+    onSend: (LanDevice, Boolean, Boolean) -> Unit,
+) {
+    SyncCard(title = "局域网设备同步", icon = Icons.Outlined.Wifi) {
+        Text(
+            text = "同一 Wi-Fi 下与另一台设备直接互传设置与歌单，无需服务器（兼容 LocalSend）；" +
+                "「播放流转」（主页入口）也走这条通道，同样需要在此开启接收",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(text = "允许其他设备发现并推送到本机", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = if (serverRunning) {
+                        "正在监听端口 $port" + if (localAddresses.isEmpty()) "" else "（${localAddresses.joinToString("、")}）"
+                    } else {
+                        "已关闭：对端扫不到本机，也无法向本机发送数据或播放流转"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = serverRunning, onCheckedChange = onServerEnabledChange)
+        }
+
+        Spacer(Modifier.height(10.dp))
+        SyncTextField(
+            value = alias,
+            onValueChange = onAliasChange,
+            label = "本机显示名",
+            placeholder = "默认使用设备型号",
+            enabled = true,
+        )
+        Spacer(Modifier.height(8.dp))
+        SyncTextField(
+            value = port,
+            onValueChange = onPortChange,
+            label = "端口",
+            placeholder = "53317",
+            enabled = true,
+        )
+        Spacer(Modifier.height(8.dp))
+        SyncTextField(
+            value = pin,
+            onValueChange = onPinChange,
+            label = "PIN（可留空）",
+            placeholder = "填写后双方需一致",
+            enabled = true,
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = onScan, enabled = !scanning) {
+                Text(if (scanning) "扫描中…" else "扫描设备")
+            }
+            Spacer(Modifier.width(10.dp))
+            if (message != null) {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (message.contains("失败") || message.contains("拒绝")) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
+
+        if (devices.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            devices.forEach { device ->
+                LanDeviceRow(device = device, onSend = onSend)
+            }
+        }
+    }
+}
+
+/** 单台已发现设备：显示名 + 地址，两个推送按钮。 */
+@Composable
+private fun LanDeviceRow(
+    device: LanDevice,
+    onSend: (LanDevice, Boolean, Boolean) -> Unit,
+) {
+    var includeSettings by remember(device.host) { mutableStateOf(true) }
+    var includeLists by remember(device.host) { mutableStateOf(true) }
+    val canSend = includeSettings || includeLists
+
+    Column(Modifier.padding(vertical = 10.dp)) {
+        Text(text = device.displayName, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            text = "${device.host}:${device.info.port}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = includeSettings, onCheckedChange = { includeSettings = it })
+            Text(text = "设置与音源", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.width(8.dp))
+            Checkbox(checked = includeLists, onCheckedChange = { includeLists = it })
+            Text(text = "歌单与数据", style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = { onSend(device, includeSettings, includeLists) },
+            enabled = canSend,
+        ) { Text("发送到该设备") }
     }
 }
 

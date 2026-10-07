@@ -1,5 +1,12 @@
 package com.dpmusic.app.ui.screens.mine
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +55,8 @@ import com.dpmusic.app.ui.screens.favorites.FavoritesContent
 import com.dpmusic.app.ui.screens.favorites.FavoritesViewModel
 import com.dpmusic.app.ui.screens.recent.RecentContent
 import com.dpmusic.app.ui.screens.recent.RecentViewModel
+import com.dpmusic.app.ui.motion.DPMotion
+import com.dpmusic.app.ui.util.rememberDpHaptics
 
 /**
  * 我的页（最近播放 + 我的喜欢合并）：
@@ -82,6 +91,7 @@ fun MineScreen(
     val addHost = rememberAddToPlaylistHost()
 
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    val haptics = rememberDpHaptics()
 
     // 两个列表的滚动状态分别外提：Tab 切换时偏移锚定保持
     val recentListState = rememberLazyListState()
@@ -131,38 +141,62 @@ fun MineScreen(
             ) {
                 SegmentedButton(
                     selected = tab == 0,
-                    onClick = { tab = 0 },
+                    onClick = {
+                        if (tab != 0) haptics.click()
+                        tab = 0
+                    },
                     shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                 ) {
                     Text("最近播放", style = MaterialTheme.typography.labelMedium)
                 }
                 SegmentedButton(
                     selected = tab == 1,
-                    onClick = { tab = 1 },
+                    onClick = {
+                        if (tab != 1) haptics.click()
+                        tab = 1
+                    },
                     shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                 ) {
                     Text("我的喜欢", style = MaterialTheme.typography.labelMedium)
                 }
             }
 
-            if (tab == 0) {
-                RecentContent(
-                    vm = recentVm,
-                    recent = recent,
-                    nowPlayingKey = nowPlayingKey,
-                    onSongLongClick = { addHost.show(listOf(it)) },
-                    listState = recentListState,
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                FavoritesContent(
-                    vm = favoritesVm,
-                    favorites = favorites,
-                    nowPlayingKey = nowPlayingKey,
-                    onSongLongClick = { addHost.show(listOf(it)) },
-                    listState = favoritesListState,
-                    modifier = Modifier.weight(1f),
-                )
+            // 两个列表之间做**方向感知**的滑动淡入（左→右顺向、右→左逆向），
+            // 让「切 Tab」有明确的方位感，而不是硬替换。
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    val dir = if (forward) 1 else -1
+                    (slideInHorizontally(tween(DPMotion.Medium, easing = DPMotion.Decelerate)) { it / 12 * dir } +
+                        fadeIn(tween(DPMotion.Medium)))
+                        .togetherWith(
+                            slideOutHorizontally(tween(DPMotion.Fast, easing = DPMotion.Accelerate)) { -it / 12 * dir } +
+                                fadeOut(tween(DPMotion.Fast)),
+                        )
+                },
+                label = "mineTab",
+                modifier = Modifier.weight(1f),
+            ) { current ->
+                if (current == 0) {
+                    RecentContent(
+                        vm = recentVm,
+                        recent = recent,
+                        nowPlayingKey = nowPlayingKey,
+                        onSongLongClick = { addHost.show(listOf(it)) },
+                        listState = recentListState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    FavoritesContent(
+                        vm = favoritesVm,
+                        favorites = favorites,
+                        nowPlayingKey = nowPlayingKey,
+                        onSongLongClick = { addHost.show(listOf(it)) },
+                        listState = favoritesListState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }

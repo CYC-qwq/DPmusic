@@ -1,7 +1,9 @@
 package com.dpmusic.app.core.script
 
 import android.util.LruCache
+import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.PlayQuality
+import com.dpmusic.app.core.model.ScriptOrder
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.net.ResolveException
 import com.dpmusic.app.core.playback.PlaybackHeaderStore
@@ -21,29 +23,53 @@ data class SourceTestResult(
 /**
  * MusicFree 插件解析器（播放链路接入层）。
  *
- * 与 [ScriptMusicResolver]（LX 脚本）并列：把本应用的 [Song] 映射为 MusicFree 的
- * `musicItem`、把 [PlayQuality] 映射为 MusicFree 的音质档位（low/standard/high/super），
- * 再调用插件的 `getMediaSource(musicItem, quality)` 取真实播放地址。
+ * ## 从「单插件」到「按序尝试多个插件」
+ * 与 [ScriptMusicResolver] 同构：持有 [PluginEnginePool]，按用户为该平台排的顺序
+ * 依次尝试 —— 前一个失败自动落到下一个。插件是否「有意义」也由
+ * 「已挂载 + 实现了 `getMediaSource` + 声明覆盖该平台」三者共同决定。
  *
  * 插件返回的请求头会登记进 [PlaybackHeaderStore]，由播放侧在发请求时注入。
  */
-class MusicFreeResolver(private val engine: MusicFreeEngine) {
+class MusicFreeResolver(
+    private val pool: PluginEnginePool,
+    /** 当前顺序配置（逐平台） */
+    private val orders: () -> List<ScriptOrder>,
+) {
 
     private data class CachedUrl(val url: String, val at: Long)
 
     private val cache = object : LruCache<String, CachedUrl>(64) {}
 
-    /** 插件是否已就绪且实现了取源能力 */
-    fun canResolve(): Boolean {
-        val status = engine.status.value as? PluginEngineStatus.Ready ?: return false
-        return status.meta.supports(METHOD_GET_MEDIA_SOURCE)
-    }
+    /** 该平台当前**可参与解析**的插件 id（按用户顺序，已过滤未启用 / 不覆盖该平台者） */
+    fun availablePluginIds(platform: MusicPlatform): List<String> =
+        orders().firstOrNull { it.platformId == platform.id && it.kind == PLUGIN_KIND }
+            ?.refs.orEmpty()
+            .filter { it.enabled && pool.canResolve(it.id, platform) }
+            .map { it.id }
 
-    /** 当前插件名（用于提示文案） */
+    /** 链上是否有能接管该平台的插件（只判能力、不尝试） */
+    fun canResolve(platform: MusicPlatform): Boolean = availablePluginIds(platform).isNotEmpty()
+
+    /** 兼容旧调用点：不区分平台时，任意平台有可用插件即算「可解析」 */
+    fun canResolve(): Boolean = MusicPlatform.entries.any { canResolve(it) }
+
+    /**
+     * 插件是否覆盖该平台 —— 用「链上是否有该插件的可用项」判定。
+     *
+     * 单个插件的覆盖判定在 [PluginEnginePool.canResolve] 内部（比平台名字符串）。
+     */
+    fun supportsPlatform(platform: MusicPlatform): Boolean = canResolve(platform)
+
+    /** 链上插件的展示名（多个时取第一个可用的，用于提示文案） */
     fun pluginLabel(): String =
-        (engine.status.value as? PluginEngineStatus.Ready)?.meta?.platform.orEmpty().ifBlank { "MusicFree 插件" }
+        MusicPlatform.entries.asSequence()
+            .flatMap { availablePluginIds(it).asSequence() }
+            .firstOrNull()
+            ?.let { pool.labelOf(it) }
+            .orEmpty()
+            .ifBlank { "MusicFree 插件" }
 
-    /** 解析播放地址（音质逐级降档 + 8 分钟缓存） */
+    /** 解析播放地址：按用户顺序逐个插件尝试，首个成功即返回（音质逐级降档 + 8 分钟缓存） */
     suspend fun resolve(song: Song, quality: PlayQuality): ScriptResolvedUrl {
         val cacheKey = "${song.stableKey}@${quality.id}"
         cache.get(cacheKey)?.let {
@@ -51,15 +77,46 @@ class MusicFreeResolver(private val engine: MusicFreeEngine) {
                 return ScriptResolvedUrl(it.url, quality.id)
             }
         }
+        val candidates = availablePluginIds(song.platform)
+        if (candidates.isEmpty()) {
+            throw ResolveException("没有可用的 MusicFree 插件（未启用或不覆盖 ${song.platform.label}）", song.platform)
+        }
+
+        var lastError: Exception? = null
+        candidates.forEach { pluginId ->
+            val engine = pool.engineOf(pluginId) ?: return@forEach
+            for (mfQuality in qualityChain(quality)) {
+                try {
+                    val result = requestMediaSource(engine, song, mfQuality)
+                    val url = result.first
+                    if (url.isNotBlank()) {
+                        cache.put(cacheKey, CachedUrl(url, System.currentTimeMillis()))
+                        return ScriptResolvedUrl(url, quality.id)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                }
+            }
+            AppLogger.w(TAG, "插件解析失败，落到下一项：$pluginId（${lastError?.message}）")
+        }
+        throw ResolveException(lastError?.message ?: "插件音源解析失败", song.platform)
+    }
+
+    /** 只用**指定**插件解析（配置页「试听此项」用；不走链、不兜底） */
+    suspend fun resolveWithPlugin(
+        pluginId: String,
+        song: Song,
+        quality: PlayQuality,
+    ): ScriptResolvedUrl {
+        val engine = pool.engineOf(pluginId)
+            ?: throw ResolveException("该插件当前未启用", song.platform)
         var lastError: Exception? = null
         for (mfQuality in qualityChain(quality)) {
             try {
-                val result = requestMediaSource(song, mfQuality)
-                val url = result.first
-                if (url.isNotBlank()) {
-                    cache.put(cacheKey, CachedUrl(url, System.currentTimeMillis()))
-                    return ScriptResolvedUrl(url, quality.id)
-                }
+                val url = requestMediaSource(engine, song, mfQuality).first
+                if (url.isNotBlank()) return ScriptResolvedUrl(url, quality.id)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -83,25 +140,46 @@ class MusicFreeResolver(private val engine: MusicFreeEngine) {
     suspend fun testResolve(song: Song): SourceTestResult {
         val started = System.currentTimeMillis()
         val label = pluginLabel()
-        if (!canResolve()) {
-            return SourceTestResult(label, false, "插件未就绪或未实现 getMediaSource", 0L)
+        if (!canResolve(song.platform)) {
+            return SourceTestResult(label, false, "无可用插件（未启用或不覆盖 ${song.platform.label}）", 0L)
         }
         return try {
-            val result = requestMediaSource(song, "standard")
-            val elapsed = System.currentTimeMillis() - started
-            val url = result.first
-            if (url.isBlank()) {
-                SourceTestResult(label, false, "插件返回了空地址", elapsed)
-            } else {
-                SourceTestResult(label, true, "解析成功（${url.take(64)}…）", elapsed)
-            }
+            val resolved = resolve(song, PlayQuality.HIGH)
+            SourceTestResult(
+                label, true,
+                "解析成功 · ${resolved.url.take(56)}…",
+                System.currentTimeMillis() - started,
+            )
+        } catch (e: Exception) {
+            SourceTestResult(label, false, e.message ?: "解析失败", System.currentTimeMillis() - started)
+        }
+    }
+
+    /** 只用**指定**插件解析 —— 供配置页「试听此项」 */
+    suspend fun testPlugin(pluginId: String, song: Song): SourceTestResult {
+        val started = System.currentTimeMillis()
+        val label = pool.labelOf(pluginId).ifBlank { "MusicFree 插件" }
+        if (!pool.canResolve(pluginId, song.platform)) {
+            return SourceTestResult(label, false, "未启用或不覆盖 ${song.platform.label}", 0L)
+        }
+        return try {
+            val resolved = resolveWithPlugin(pluginId, song, PlayQuality.HIGH)
+            SourceTestResult(
+                label, true,
+                "解析成功 · ${resolved.url.take(56)}…",
+                System.currentTimeMillis() - started,
+            )
         } catch (e: Exception) {
             SourceTestResult(label, false, e.message ?: "解析失败", System.currentTimeMillis() - started)
         }
     }
 
     /** 调用插件 getMediaSource；返回 (url, headers) */
-    private suspend fun requestMediaSource(song: Song, mfQuality: String): Pair<String, Map<String, String>> {
+    private suspend fun requestMediaSource(
+        engine: PluginEngine,
+        song: Song,
+        mfQuality: String,
+    ): Pair<String, Map<String, String>> {
         val args = JSONArray().apply {
             put(buildMusicItem(song))
             put(mfQuality)
@@ -152,6 +230,7 @@ class MusicFreeResolver(private val engine: MusicFreeEngine) {
         val target = when (quality) {
             PlayQuality.STANDARD -> "standard"
             PlayQuality.HIGH -> "high"
+            // MusicFree 插件档位只有 low/standard/high/super，无损及以上统一请求 super
             else -> "super"
         }
         val all = listOf("super", "high", "standard", "low")
@@ -162,5 +241,9 @@ class MusicFreeResolver(private val engine: MusicFreeEngine) {
     private companion object {
         const val METHOD_GET_MEDIA_SOURCE = "getMediaSource"
         const val URL_TTL_MS = 8 * 60_000L
+        const val TAG = "MusicFreeResolver"
+
+        /** 与 [com.dpmusic.app.core.model.ScriptKind.PLUGIN] 的 id 保持一致 */
+        const val PLUGIN_KIND = "plugin"
     }
 }

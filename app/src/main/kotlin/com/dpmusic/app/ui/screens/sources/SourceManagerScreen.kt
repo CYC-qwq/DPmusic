@@ -12,6 +12,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,9 +31,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material3.AlertDialog
@@ -47,6 +51,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +62,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
@@ -76,13 +82,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.scale
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpmusic.app.AppViewModelFactory
-import com.dpmusic.app.core.model.SourcePriority
+import com.dpmusic.app.core.model.MusicPlatform
+import com.dpmusic.app.core.model.ScriptKind
+import com.dpmusic.app.core.model.ScriptOrder
+import com.dpmusic.app.core.model.SourceChain
+import com.dpmusic.app.core.model.SourceEngine
 import com.dpmusic.app.core.script.MusicFreePlugin
-import com.dpmusic.app.core.script.PluginEngineStatus
-import com.dpmusic.app.core.script.ScriptEngineStatus
 import com.dpmusic.app.core.script.SourceTestResult
 import com.dpmusic.app.core.script.UserScript
 import com.dpmusic.app.ui.components.DpTopAppBar
@@ -105,29 +114,37 @@ fun SourceManagerScreen(
 ) {
     val vm: SourceManagerViewModel = viewModel(factory = AppViewModelFactory)
     val scripts by vm.scripts.collectAsStateWithLifecycle()
-    val activeId by vm.activeId.collectAsStateWithLifecycle()
-    val engineStatus by vm.engineStatus.collectAsStateWithLifecycle()
-    val sourcePriority by vm.sourcePriority.collectAsStateWithLifecycle()
+    val sourceChains by vm.sourceChains.collectAsStateWithLifecycle()
+    val scriptOrders by vm.scriptOrders.collectAsStateWithLifecycle()
+    val scriptMemory by vm.scriptMemory.collectAsStateWithLifecycle()
+    val pluginMemory by vm.pluginMemory.collectAsStateWithLifecycle()
+    val residentScriptIds by vm.residentScriptIds.collectAsStateWithLifecycle()
+    val residentPluginIds by vm.residentPluginIds.collectAsStateWithLifecycle()
+    val crossPlatformFallback by vm.crossPlatformFallback.collectAsStateWithLifecycle()
+    val probingEngine by vm.probingEngine.collectAsStateWithLifecycle()
+    val engineProbeResults by vm.engineProbeResults.collectAsStateWithLifecycle()
     val importing by vm.importing.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val plugins by vm.pluginList.collectAsStateWithLifecycle()
-    val activePluginId by vm.activePluginId.collectAsStateWithLifecycle()
-    val pluginStatus by vm.pluginStatus.collectAsStateWithLifecycle()
+    val enabledPlatforms by vm.enabledPlatforms.collectAsStateWithLifecycle()
     val testResults by vm.testResults.collectAsStateWithLifecycle()
     val testing by vm.testing.collectAsStateWithLifecycle()
+
+    // 内存占用是「按需采样」的：进页面时刷一次，改动后由各操作回调再刷
+    LaunchedEffect(Unit) { vm.refreshMemoryUsage() }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     val fileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        uri?.let { vm.importFromUri(context, it) }
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) vm.importFromUris(context, uris)
     }
 
     val pluginFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        uri?.let { vm.importPluginFromUri(context, it) }
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) vm.importPluginsFromUris(context, uris)
     }
 
     var showUrlDialog by remember { mutableStateOf(false) }
@@ -173,15 +190,14 @@ fun SourceManagerScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            /* ① 总览：常驻不收纳 —— 一眼看全状态 / 激活音源 / 数量统计 / 可用性测试入口 */
+            /* ① 总览：常驻不收纳 —— 一眼看全状态 / 解析链路 / 数量统计 / 占用 / 可用性测试入口 */
             item(key = "overview") {
                 SourceOverviewCard(
-                    status = engineStatus,
-                    activeScript = scripts.find { it.id == activeId },
                     scriptCount = scripts.size,
                     pluginCount = plugins.size,
-                    activePluginName = plugins.find { it.id == activePluginId }?.name,
-                    priority = sourcePriority,
+                    chainSummary = chainSummary(sourceChains),
+                    residentCount = residentScriptIds.size + residentPluginIds.size,
+                    totalBytes = scriptMemory.values.sum() + pluginMemory.values.sum(),
                     testing = testing,
                     results = testResults,
                     resultsExpanded = testExpanded,
@@ -203,18 +219,14 @@ fun SourceManagerScreen(
                         title = "LX 音源脚本",
                         summary = when {
                             scripts.isEmpty() -> "尚未导入 · 点开可导入 .js 或直链"
-                            else -> buildString {
-                                append("${scripts.size} 个")
-                                scripts.find { it.id == activeId }?.let { append(" · 启用中：${it.name}") }
-                                    ?: append(" · 未启用")
-                            }
+                            else -> "${scripts.size} 个 · 驻留 ${residentScriptIds.size} 个"
                         },
                         expanded = lxExpanded,
                         onToggle = { lxExpanded = !lxExpanded },
                     )
                     CollapseSection(expanded = lxExpanded) {
                         SectionImportRow(
-                            hint = "支持标准 LX Music 音源 JS（.js 文件或直链）",
+                            hint = "支持标准 LX Music 音源 JS；可一次多选多个文件，内容重复的会自动跳过",
                             primaryLabel = "选择 JS 文件",
                             importing = importing,
                             onPickFile = {
@@ -229,23 +241,34 @@ fun SourceManagerScreen(
                             SectionEmptyHint(
                                 icon = Icons.Outlined.Extension,
                                 title = "还没有导入音源脚本",
-                                subtitle = "从文件或链接导入后点「启用」，即加载脚本提供解析能力",
+                                subtitle = "导入后在下方「JS 顺序」里启用并排序，即可参与解析",
                                 modifier = Modifier.staggeredEntrance(index = 1),
                             )
                         } else {
-                            scripts.forEachIndexed { index, script ->
-                                ScriptCard(
-                                    script = script,
-                                    active = script.id == activeId,
-                                    status = engineStatus,
-                                    onToggle = { vm.toggleActive(script.id) },
-                                    onDelete = { deleteTarget = script },
-                                    modifier = Modifier.staggeredEntrance(
-                                        index = index + 1,
-                                        enabled = index < 12,
-                                    ),
-                                )
-                            }
+                            ScriptOrderEditor(
+                                kind = ScriptKind.SCRIPT,
+                                orders = scriptOrders,
+                                platforms = enabledPlatforms,
+                                labelOf = { id -> scripts.find { it.id == id }?.name ?: id },
+                                subtitleOf = { id ->
+                                    scripts.find { it.id == id }?.let { s ->
+                                        listOfNotNull(
+                                            s.version.takeIf { it.isNotBlank() }?.let { "v$it" },
+                                            s.author.takeIf { it.isNotBlank() },
+                                        ).joinToString(" · ")
+                                    }.orEmpty()
+                                },
+                                memoryOf = { id -> scriptMemory[id] },
+                                residentIds = residentScriptIds,
+                                statusOf = { id -> vm.scriptStatus(id) },
+                                onMove = vm::moveScript,
+                                onToggleItem = vm::toggleScript,
+                                onDelete = { id -> deleteTarget = scripts.find { it.id == id } },
+                                onProbe = { platform, id -> vm.probeScript(platform, id) },
+                                probing = probingEngine,
+                                probeResults = engineProbeResults,
+                                modifier = Modifier.staggeredEntrance(index = 1),
+                            )
                         }
                     }
                 }
@@ -259,18 +282,14 @@ fun SourceManagerScreen(
                         title = "MusicFree 插件",
                         summary = when {
                             plugins.isEmpty() -> "尚未导入 · Key 与脚本都失败时的最后兜底"
-                            else -> buildString {
-                                append("${plugins.size} 个")
-                                plugins.find { it.id == activePluginId }?.let { append(" · 启用中：${it.name}") }
-                                    ?: append(" · 未启用")
-                            }
+                            else -> "${plugins.size} 个 · 驻留 ${residentPluginIds.size} 个"
                         },
                         expanded = pluginExpanded,
                         onToggle = { pluginExpanded = !pluginExpanded },
                     )
                     CollapseSection(expanded = pluginExpanded) {
                         SectionImportRow(
-                            hint = "兼容 MusicFree 生态插件（单文件 .js，导出 search / getMediaSource 等）",
+                            hint = "兼容 MusicFree 生态插件（单文件 .js，导出 search / getMediaSource 等）；可一次多选，内容重复的会自动跳过",
                             primaryLabel = "选择 JS 插件",
                             importing = importing,
                             onPickFile = {
@@ -285,42 +304,61 @@ fun SourceManagerScreen(
                             SectionEmptyHint(
                                 icon = Icons.Outlined.Extension,
                                 title = "还没有导入插件",
-                                subtitle = "插件为单文件 .js，导入后点「启用」即可参与解析",
+                                subtitle = "插件为单文件 .js，导入后在下方「JS 顺序」里启用并排序",
                                 modifier = Modifier.staggeredEntrance(index = 1),
                             )
                         } else {
-                            plugins.forEachIndexed { index, plugin ->
-                                PluginCard(
-                                    plugin = plugin,
-                                    active = plugin.id == activePluginId,
-                                    status = pluginStatus,
-                                    onToggle = { vm.togglePlugin(plugin.id) },
-                                    onDelete = { deletePluginTarget = plugin },
-                                    modifier = Modifier.staggeredEntrance(
-                                        index = index + 1,
-                                        enabled = index < 12,
-                                    ),
-                                )
-                            }
+                            ScriptOrderEditor(
+                                kind = ScriptKind.PLUGIN,
+                                orders = scriptOrders,
+                                platforms = enabledPlatforms,
+                                labelOf = { id -> plugins.find { it.id == id }?.name ?: id },
+                                subtitleOf = { id ->
+                                    plugins.find { it.id == id }?.let { p ->
+                                        listOfNotNull(
+                                            p.platform.takeIf { it.isNotBlank() },
+                                            p.version.takeIf { it.isNotBlank() }?.let { "v$it" },
+                                        ).joinToString(" · ")
+                                    }.orEmpty()
+                                },
+                                memoryOf = { id -> pluginMemory[id] },
+                                residentIds = residentPluginIds,
+                                statusOf = { id -> vm.pluginStatusOf(id) },
+                                onMove = vm::moveScript,
+                                onToggleItem = vm::toggleScript,
+                                onDelete = { id -> deletePluginTarget = plugins.find { it.id == id } },
+                                onProbe = { platform, id -> vm.probePlugin(platform, id) },
+                                probing = probingEngine,
+                                probeResults = engineProbeResults,
+                                modifier = Modifier.staggeredEntrance(index = 1),
+                            )
                         }
                     }
                 }
             }
 
-            /* ④ 解析优先级（可收纳） */
-            item(key = "priority") {
+            /* ④ 解析链路（可收纳）：逐平台自定义音源顺序与启停 —— 取代旧版「全局优先级」 */
+            item(key = "chains") {
                 Column {
                     SectionHeader(
                         icon = Icons.Outlined.SwapVert,
-                        title = "解析优先级",
-                        summary = "当前：${sourcePriority.label}",
+                        title = "解析链路",
+                        summary = chainSummary(sourceChains),
                         expanded = priorityExpanded,
                         onToggle = { priorityExpanded = !priorityExpanded },
                     )
                     CollapseSection(expanded = priorityExpanded) {
-                        PriorityOptions(
-                            current = sourcePriority,
-                            onSelect = vm::setSourcePriority,
+                        SourceChainEditor(
+                            chains = sourceChains,
+                            platforms = enabledPlatforms,
+                            crossPlatformFallback = crossPlatformFallback,
+                            probingEngine = probingEngine,
+                            probeResults = engineProbeResults,
+                            onMove = vm::moveEngine,
+                            onToggleEngine = vm::toggleEngine,
+                            onReset = vm::resetChain,
+                            onCrossPlatformFallbackChange = vm::setCrossPlatformFallback,
+                            onProbe = vm::probeEngine,
                         )
                     }
                 }
@@ -405,30 +443,29 @@ fun SourceManagerScreen(
 /* ---------------- ① 总览卡（常驻，不收纳） ---------------- */
 
 /**
- * 总览卡：状态灯 + 激活音源 + 支持平台 + 数量统计 + 可用性测试入口。
- * 目的：进页面第一眼就能判断「当前音源能不能用」，不用往下翻。
+ * 总览卡：脚本/插件数量 + 解析链路摘要 + **实时占用** + 可用性测试入口。
+ * 目的：进页面第一眼就能判断「当前音源能不能用、开了多少东西」。
  */
 @Composable
 private fun SourceOverviewCard(
-    status: ScriptEngineStatus,
-    activeScript: UserScript?,
     scriptCount: Int,
     pluginCount: Int,
-    activePluginName: String?,
-    priority: SourcePriority,
+    /** 链路摘要（取代旧的「全局优先级」标签——那个设置已不再驱动解析） */
+    chainSummary: String,
+    /** 当前**驻留**（已加载进内存）的 JS 总数 */
+    residentCount: Int,
+    /** 所有驻留 JS 的实时占用合计（字节） */
+    totalBytes: Long,
     testing: Boolean,
     results: List<SourceTestResult>,
     resultsExpanded: Boolean,
     onToggleResults: () -> Unit,
     onRunTest: () -> Unit,
 ) {
-    val (dotColor, title) = when (status) {
-        is ScriptEngineStatus.Idle -> MaterialTheme.colorScheme.outline to "未启用音源脚本"
-        is ScriptEngineStatus.Loading -> MaterialTheme.colorScheme.tertiary to "正在加载脚本…"
-        is ScriptEngineStatus.Ready -> MaterialTheme.colorScheme.primary to "已就绪"
-        is ScriptEngineStatus.Failed -> MaterialTheme.colorScheme.error to "加载失败"
-    }
     val okCount = results.count { it.success }
+    // 占用偏高时给个明确警示。阈值取 64MB：正常脚本/插件单个在几 MB 量级，
+    // 到这个量级说明「同时开了很多个」，在低端机上会有 OOM 风险。
+    val heavy = totalBytes >= HEAVY_MEMORY_BYTES
 
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
@@ -442,59 +479,40 @@ private fun SourceOverviewCard(
                     Modifier
                         .size(10.dp)
                         .clip(CircleShape)
-                        .background(dotColor),
+                        .background(
+                            if (heavy) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary,
+                        ),
                 )
                 Spacer(Modifier.width(10.dp))
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = if (heavy) "音源占用偏高" else "音源已就绪",
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Spacer(Modifier.weight(1f))
-                MiniPill("优先级 ${priority.label}")
+                MiniPill("链路 ${chainSummary}")
             }
             Spacer(Modifier.height(6.dp))
-            when (status) {
-                is ScriptEngineStatus.Idle -> {
-                    Text(
-                        text = "导入 LX Music 音源脚本并启用后，可获得在线播放解析能力。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                is ScriptEngineStatus.Loading -> {
-                    Text(
-                        text = activeScript?.name.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                is ScriptEngineStatus.Ready -> {
-                    activeScript?.let { script ->
-                        Text(
-                            text = script.name + if (script.version.isNotBlank()) " · v${script.version}" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    val labels = status.sources.keys.map { SOURCE_LABELS[it] ?: it }
-                    Text(
-                        text = if (labels.isEmpty()) "未声明可用平台" else "支持平台：${labels.joinToString(" · ")}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                is ScriptEngineStatus.Failed -> {
-                    Text(
-                        text = status.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+            Text(
+                text = "脚本 $scriptCount · 插件 $pluginCount · 驻留 $residentCount · " +
+                    "占用 ${formatBytes(totalBytes)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (heavy) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "同时驻留的 JS 较多，每个都要一块独立的运行时内存。" +
+                        "可在下方「JS 顺序」里关掉用不到的项，或删除不再使用的脚本。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
-
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MiniStat("LX 脚本", "$scriptCount")
                 MiniStat("插件", "$pluginCount")
-                MiniStat("启用中", activeScript?.name ?: activePluginName ?: "无")
+                MiniStat("驻留中", "$residentCount")
             }
 
             Spacer(Modifier.height(14.dp))
@@ -801,41 +819,388 @@ private fun SectionEmptyHint(
     }
 }
 
-/* ---------------- ④ 解析优先级（收纳内容） ---------------- */
+/* ---------------- ④ 解析链路（收纳内容） ---------------- */
 
-/** 解析优先级：脚本音源 vs Key 音源的先后与回退控制 */
+/** 分组头摘要：网易云：概念版 › Key › 脚本 */
+private fun chainSummary(chains: List<SourceChain>): String {
+    val wy = chains.firstOrNull { it.platformId == MusicPlatform.WY.id } ?: return "逐平台自定义"
+    val order = wy.activeEngines().joinToString(" › ") { it.label }
+    return "网易云：${order.ifBlank { "未启用任何音源" }}"
+}
+
+/**
+ * 解析链路编辑器：**每个平台一组**，组内是有序的引擎列表。
+ *
+ * 交互设计（目标：一眼看懂 + 两步改完）：
+ * 1. **平台分页**：顶部三个 Tab（网易云 / QQ / 酷狗）。一屏只看一条链，
+ *    避免把 3×3~4 个条目全铺开造成的「一整页开关」压迫感；Tab 上带一个小圆点
+ *    标明该平台是否被改过（与默认不同）。
+ * 2. **顺序即优先级**：从上到下就是尝试顺序，列表顶部有文字说明；
+ *    每行右侧 `↑ ↓` 上下移动，到顶/到底自动禁用（灰掉），不会出现「点了没反应」。
+ * 3. **逐项开关**：每行一个 Switch。关掉的项**仍留在原位**（位置不丢，重新打开即恢复），
+ *    只是解析时跳过；最后一项不允许关闭。
+ * 4. **每项可单独试听**：点行内「试听」直接跑一次真实解析，结果就地显示。
+ *    （用户排完顺序最大的疑问是「这么排真的行吗」，就地验证省掉回播放页试的过程。）
+ * 5. **不支持的引擎**：如「酷狗概念版」在网易云 / QQ 标签下会显示为
+ *    「仅酷狗可用」且不可交互，而不是隐藏 —— 隐藏会让人以为没这个功能。
+ * 6. **底部**：跨平台兜底总开关 + 恢复本平台默认。
+ */
 @Composable
-private fun PriorityOptions(
-    current: SourcePriority,
-    onSelect: (SourcePriority) -> Unit,
+private fun SourceChainEditor(
+    chains: List<SourceChain>,
+    platforms: List<MusicPlatform>,
+    crossPlatformFallback: Boolean,
+    probingEngine: String?,
+    probeResults: Map<String, SourceTestResult>,
+    onMove: (SourceChain, SourceEngine, Boolean) -> Unit,
+    onToggleEngine: (SourceChain, SourceEngine) -> Unit,
+    onReset: (MusicPlatform) -> Unit,
+    onCrossPlatformFallbackChange: (Boolean) -> Unit,
+    onProbe: (MusicPlatform, SourceEngine) -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
-        ),
-    ) {
-        Column(Modifier.padding(vertical = 6.dp)) {
-            SourcePriority.entries.forEach { option ->
+    // 只展示**有可配置引擎 且 已启用**的平台（汽水无链路；关掉的音源不必配置）
+    val shownPlatforms = remember(chains, platforms) {
+        chains.mapNotNull { MusicPlatform.fromId(it.platformId) }
+            .filter { it != MusicPlatform.QS && it in platforms }
+    }
+    var selectedId by rememberSaveable { mutableStateOf(MusicPlatform.WY.id) }
+    val selected = shownPlatforms.firstOrNull { it.id == selectedId } ?: shownPlatforms.firstOrNull()
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (selected == null) return@Column
+        val chain = chains.firstOrNull { it.platformId == selected.id } ?: return@Column
+
+        // ① 平台分页（5 个平台 → 横向滚动，避免长名截断）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            shownPlatforms.forEach { platform ->
+                val active = platform.id == selected.id
+                val edited = chains.firstOrNull { it.platformId == platform.id }
+                    ?.let { it != SourceChain.defaultFor(platform) } == true
+                FilterChip(
+                    selected = active,
+                    onClick = { selectedId = platform.id },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(platform.label, style = MaterialTheme.typography.labelLarge)
+                            if (edited) {
+                                Spacer(Modifier.width(4.dp))
+                                Box(
+                                    Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary),
+                                 )
+                             }
+                         }
+                     },
+                )
+            }
+        }
+
+        // ② 说明（顺序即优先级）
+        Text(
+            text = "从上到下依次尝试，失败自动落到下一项。拖动右侧 ↑↓ 调整顺序。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // ③ 链路段
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
+            ),
+        ) {
+            Column {
+                chain.order.forEachIndexed { index, engine ->
+                    val supported = engine.supports(selected)
+                    val enabled = chain.isEnabled(engine)
+                    val key = "${selected.id}:${engine.id}"
+                    ChainEngineRow(
+                        index = index,
+                        total = chain.order.size,
+                        engine = engine,
+                        supported = supported,
+                        enabled = enabled,
+                        probing = probingEngine == key,
+                        probeResult = probeResults[key],
+                        onMoveUp = { onMove(chain, engine, true) },
+                        onMoveDown = { onMove(chain, engine, false) },
+                        onToggle = { onToggleEngine(chain, engine) },
+                        onProbe = { onProbe(selected, engine) },
+                    )
+                    if (index != chain.order.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 14.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        )
+                    }
+                }
+            }
+        }
+
+        // ④ 兜底与复位
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
+            ),
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("跨平台兜底", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = "本平台全部音源失败时，到其他平台找同名曲替换播放",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = crossPlatformFallback,
+                        onCheckedChange = onCrossPlatformFallbackChange,
+                    )
+                }
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp),
+                    thickness = 0.5.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(MaterialTheme.shapes.medium)
-                        .clickable { onSelect(option) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                        .clickable { onReset(selected) }
+                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(
-                        selected = option == current,
-                        onClick = { onSelect(option) },
+                    Icon(
+                        imageVector = Icons.Outlined.Restore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(text = option.label, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = option.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "恢复 ${selected.label} 的默认链路",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 链路上的单行：序号 + 名称/说明 + 上下移 + 试听 + 启停开关（+ 试听结果） */
+@Composable
+private fun ChainEngineRow(
+    index: Int,
+    total: Int,
+    engine: SourceEngine,
+    supported: Boolean,
+    enabled: Boolean,
+    probing: Boolean,
+    probeResult: SourceTestResult?,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onToggle: () -> Unit,
+    onProbe: () -> Unit,
+) {
+    val dim = !supported || !enabled
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 序号：让「从上到下 = 尝试顺序」一眼可见
+            Text(
+                text = "${index + 1}",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(16.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = engine.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (dim) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = if (!supported) "仅酷狗曲库可用" else engine.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            // 上下移：到顶 / 到底 / 不可用时禁用（灰掉，明确表达「这里不能动」）
+            IconButton(
+                onClick = onMoveUp,
+                enabled = supported && index > 0,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Filled.KeyboardArrowUp, "上移",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (supported && index > 0) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
+                )
+            }
+            IconButton(
+                onClick = onMoveDown,
+                enabled = supported && index < total - 1,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown, "下移",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (supported && index < total - 1) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
+                )
+            }
+            Switch(
+                checked = enabled && supported,
+                onCheckedChange = { onToggle() },
+                enabled = supported,
+                modifier = Modifier.scale(0.85f),
+            )
+        }
+
+        // 试听行：不可用的引擎不给点（点了必然是「未配置」，无信息量）
+        if (supported) {
+            Row(
+                modifier = Modifier.padding(start = 16.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = onProbe,
+                    enabled = !probing && enabled,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        text = if (probing) "试听中…" else "试听此项",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                probeResult?.let { result ->
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (result.success) "✓ ${result.latencyMs}ms"
+                        else "✗ ${result.detail}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (result.success) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * **JS 顺序编辑器**（LX 脚本 / MusicFree 插件共用）：每个平台一列，列表顺序即可尝试顺序。
+ *
+ * 交互设计（与「解析链路」保持同一套心智模型）：
+ * 1. **平台分页**：一屏只看一条链，避免把 3×N 项全铺开；
+ * 2. **顺序即优先级**：每行有序号，右侧 `↑↓`；到顶/到底自动禁用变灰；
+ * 3. **逐项启停**：关掉的项留在原位（重开即恢复位置），最后一项不可关；
+ * 4. **每项可单独试听**：只走这一项、不兜底，就地显示 ✓/✗；
+ * 5. **实时占用**：每行显示该项自己的内存占用；总览卡显示合计并在偏高时警示。
+ *    这是「不设硬上限、让用户自己判断」策略的配套 —— 自由度交给用户，
+ *    代价必须可见，否则用户只会在 OOM 时才发现开太多了。
+ */
+@Composable
+private fun ScriptOrderEditor(
+    kind: ScriptKind,
+    orders: List<ScriptOrder>,
+    platforms: List<MusicPlatform>,
+    labelOf: (String) -> String,
+    subtitleOf: (String) -> String,
+    memoryOf: (String) -> Long?,
+    residentIds: Set<String>,
+    statusOf: (String) -> Any,
+    onMove: (ScriptOrder, String, Boolean) -> Unit,
+    onToggleItem: (ScriptOrder, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onProbe: (MusicPlatform, String) -> Unit,
+    probing: String?,
+    probeResults: Map<String, SourceTestResult>,
+    modifier: Modifier = Modifier,
+) {
+    // 只展示**已启用**平台的 JS 顺序（汽水无链路；关掉的音源不必排序）
+    val shownPlatforms = remember(platforms) {
+        platforms.filter { it != MusicPlatform.QS }
+    }
+    var selectedId by rememberSaveable(kind) { mutableStateOf(MusicPlatform.WY.id) }
+    val selected = shownPlatforms.firstOrNull { it.id == selectedId } ?: shownPlatforms.first()
+
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // ① 平台分页（横向滚动，理由同 SourceChainEditor）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            shownPlatforms.forEach { platform ->
+                FilterChip(
+                    selected = platform.id == selected.id,
+                    onClick = { selectedId = platform.id },
+                    label = {
+                        Text(platform.label, style = MaterialTheme.typography.labelLarge)
+                    },
+                )
+            }
+        }
+
+        val order = orders.firstOrNull { it.platformId == selected.id && it.kind == kind.id }
+            ?: ScriptOrder(selected.id, kind.id, emptyList())
+
+        Text(
+            text = "从上到下依次尝试，前一项失败自动落到下一项。关掉的项仍留在原位。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = glassPanelColor(MaterialTheme.colorScheme.surfaceContainerHigh),
+            ),
+        ) {
+            Column {
+                order.refs.forEachIndexed { index, ref ->
+                    val key = "${selected.id}:${ref.id}"
+                    ScriptOrderRow(
+                        index = index,
+                        total = order.refs.size,
+                        enabled = ref.enabled,
+                        label = labelOf(ref.id),
+                        subtitle = subtitleOf(ref.id),
+                        bytes = memoryOf(ref.id),
+                        resident = ref.id in residentIds,
+                        probing = probing == key,
+                        probeResult = probeResults[key],
+                        onMoveUp = { onMove(order, ref.id, true) },
+                        onMoveDown = { onMove(order, ref.id, false) },
+                        onToggle = { onToggleItem(order, ref.id) },
+                        onProbe = { onProbe(selected, ref.id) },
+                        onDelete = { onDelete(ref.id) },
+                    )
+                    if (index != order.refs.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 14.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                         )
                     }
                 }
@@ -844,109 +1209,130 @@ private fun PriorityOptions(
     }
 }
 
-/** 单个脚本卡：名称 / 版本 / 描述 / 作者 + 启用停用 / 删除 */
+/** 顺序里的一行：序号 + 名称/副标题 + 状态 + 占用 + 上下移 + 开关 + 试听 + 删除 */
 @Composable
-private fun ScriptCard(
-    script: UserScript,
-    active: Boolean,
-    status: ScriptEngineStatus,
+private fun ScriptOrderRow(
+    index: Int,
+    total: Int,
+    enabled: Boolean,
+    label: String,
+    subtitle: String,
+    bytes: Long?,
+    resident: Boolean,
+    probing: Boolean,
+    probeResult: SourceTestResult?,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
     onToggle: () -> Unit,
+    onProbe: () -> Unit,
     onDelete: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (active) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-        ),
-    ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 序号：让「从上到下 = 尝试顺序」一眼可见
+            Text(
+                text = "${index + 1}",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.width(16.dp),
+            )
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = script.name,
-                    style = MaterialTheme.typography.titleSmall,
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (enabled) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
                 )
-                if (script.version.isNotBlank()) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = "v${script.version}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                // 副标题（版本 / 作者 / 平台）+ 加载状态 + 占用
+                val parts = buildList {
+                    if (subtitle.isNotBlank()) add(subtitle)
+                    add(if (resident) "已驻留" else "未驻留")
+                    bytes?.takeIf { it > 0 }?.let { add(formatBytes(it)) }
                 }
-            }
-            if (script.description.isNotBlank()) {
-                Spacer(Modifier.height(3.dp))
                 Text(
-                    text = script.description,
+                    text = parts.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (script.author.isNotBlank()) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = "作者：${script.author}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            IconButton(onClick = onMoveUp, enabled = index > 0, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.KeyboardArrowUp, "上移",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (index > 0) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
                 )
             }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (active) {
-                    ActiveBadge(status)
-                    Spacer(Modifier.width(10.dp))
-                }
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = onToggle) {
-                    Text(if (active) "停用" else "启用")
-                }
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        imageVector = Icons.Outlined.Delete,
-                        contentDescription = "删除脚本",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            IconButton(onClick = onMoveDown, enabled = index < total - 1, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown, "下移",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (index < total - 1) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = { onToggle() },
+                modifier = Modifier.scale(0.85f),
+            )
+        }
+
+        Row(
+            modifier = Modifier.padding(start = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onProbe,
+                enabled = !probing && enabled,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text(
+                    text = if (probing) "试听中…" else "试听此项",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            TextButton(
+                onClick = onDelete,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text(
+                    text = "删除",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            probeResult?.let { result ->
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = if (result.success) "✓ ${result.latencyMs}ms" else "✗ ${result.detail}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (result.success) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
-/** 激活脚本状态徽标 */
-@Composable
-private fun ActiveBadge(status: ScriptEngineStatus) {
-    val (color, label) = when (status) {
-        is ScriptEngineStatus.Loading -> MaterialTheme.colorScheme.tertiary to "加载中"
-        is ScriptEngineStatus.Ready -> MaterialTheme.colorScheme.primary to "已就绪"
-        is ScriptEngineStatus.Failed -> MaterialTheme.colorScheme.error to "失败"
-        is ScriptEngineStatus.Idle -> MaterialTheme.colorScheme.outline to "未加载"
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Spacer(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color),
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-        )
-    }
+/** 字节 → 人类可读（1 位小数；不足 1KB 显示 B） */
+private fun formatBytes(bytes: Long): String = when {
+    bytes <= 0L -> "—"
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
 }
+
+/** 占用警示阈值：64MB（见总览卡说明） */
+private const val HEAVY_MEMORY_BYTES = 64L * 1024 * 1024
 
 /** 链接导入对话框（脚本 / 插件共用） */
 @Composable
@@ -1080,116 +1466,3 @@ private fun SourceTestRow(
 }
 
 
-/** 单个插件卡：名称 / 平台 / 版本 / 能力 + 启用停用 / 删除 */
-@Composable
-private fun PluginCard(
-    plugin: MusicFreePlugin,
-    active: Boolean,
-    status: PluginEngineStatus,
-    onToggle: () -> Unit,
-    onDelete: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (active) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-        ),
-    ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = plugin.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (plugin.version.isNotBlank()) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = "v${plugin.version}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            val subtitle = buildString {
-                if (plugin.platform.isNotBlank()) append("平台：${plugin.platform}")
-                if (plugin.author.isNotBlank()) {
-                    if (isNotEmpty()) append(" · ")
-                    append("作者：${plugin.author}")
-                }
-            }
-            if (subtitle.isNotBlank()) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // 已就绪时展示插件实际能力（由插件自报）
-            val readyMeta = (status as? PluginEngineStatus.Ready)
-                ?.takeIf { it.pluginId == plugin.id }?.meta
-            if (readyMeta != null) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = if (readyMeta.methods.isEmpty()) {
-                        "未声明任何能力"
-                    } else {
-                        "能力：${readyMeta.methods.joinToString(" · ")}"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (readyMeta.userVariables.isNotEmpty()) {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = "需配置：${readyMeta.userVariables.joinToString("、") { it.name }}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                    )
-                }
-            }
-            if (active && status is PluginEngineStatus.Failed) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = status.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (active) {
-                    ActiveBadge(
-                        when (status) {
-                            is PluginEngineStatus.Loading -> ScriptEngineStatus.Loading(plugin.id)
-                            is PluginEngineStatus.Ready -> ScriptEngineStatus.Ready(plugin.id, emptyMap())
-                            is PluginEngineStatus.Failed -> ScriptEngineStatus.Failed(plugin.id, status.message)
-                            is PluginEngineStatus.Idle -> ScriptEngineStatus.Idle
-                        },
-                    )
-                    Spacer(Modifier.width(10.dp))
-                }
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = onToggle) {
-                    Text(if (active) "停用" else "启用")
-                }
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        imageVector = Icons.Outlined.Delete,
-                        contentDescription = "删除插件",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}

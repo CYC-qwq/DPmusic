@@ -120,6 +120,36 @@ class SyncManager(
         return now
     }
 
+    /**
+     * 构造「设置与音源」同步载荷（不含任何网络操作）。
+     *
+     * 供局域网设备同步复用：白名单与载荷格式只有这一份实现，
+     * WebDAV 与局域网两条通道不会出现「能同步的键不一致」的分叉。
+     */
+    suspend fun buildSettingsPayload(): SettingsSyncPayload =
+        SettingsSyncPayload(lastModified = System.currentTimeMillis(), data = snapshot(SyncScopes::matchesSettings))
+
+    /** 应用「设置与音源」载荷（覆盖语义，含敏感键防护）。 */
+    suspend fun applySettingsPayload(payload: SettingsSyncPayload) {
+        restore(SyncScopes::matchesSettings, payload.data)
+        settings.setWebdavLastSyncTime(payload.lastModified)
+    }
+
+    /** 构造「歌单与数据」同步载荷（不含任何网络操作）。 */
+    suspend fun buildListsPayload(): ListsSyncPayload =
+        ListsSyncPayload(
+            lastModified = System.currentTimeMillis(),
+            data = snapshot(SyncScopes::matchesLists),
+            downloadTasks = downloadTasks.snapshotForSync(),
+        )
+
+    /** 应用「歌单与数据」载荷（覆盖语义）。 */
+    suspend fun applyListsPayload(payload: ListsSyncPayload) {
+        restore(SyncScopes::matchesLists, payload.data)
+        downloadTasks.importFromSync(payload.downloadTasks)
+        settings.setWebdavLastSyncTime(payload.lastModified)
+    }
+
     /** 从云端恢复「设置与音源」；云端无文件返回 false */
     suspend fun downloadSettings(): Boolean {
         val config = requireConfig()

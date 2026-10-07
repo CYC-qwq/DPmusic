@@ -4,6 +4,7 @@ import android.util.Base64
 import com.dpmusic.app.core.lyric.KrcParser
 import com.dpmusic.app.core.lyric.LrcParser
 import com.dpmusic.app.core.model.MusicPlatform
+import com.dpmusic.app.core.model.PlayQuality
 import com.dpmusic.app.core.model.PlaylistSummary
 import com.dpmusic.app.core.model.RankSummary
 import com.dpmusic.app.core.model.Song
@@ -18,6 +19,13 @@ import kotlinx.serialization.json.JsonElement
  * - 榜单：m.kugou.com /rank/list + mobilecdn /api/v3/rank/song
  * - 歌词：krcs.kugou.com 搜索 + lyrics.kugou.com 下载（KRC 逐字 / LRC 行级回退）
  * - 封面：trans_param.union_cover（{size} 占位替换）
+ *
+ * **评论功能不实现**（`comments()` 继承 PlatformApi 的默认实现，返回 null → UI 显示「该平台暂不支持评论」）：
+ * 实测 `mcomment.kugou.com` 的 `commentsv2/getCommentWithLike` 与 `comments/getComments` 均需
+ * 签名（无签名返回 `err_code:10002 获取错误请重试` / `未传入hash`），
+ * `wwwapi.kugou.com/yy/index.php?r=comment/get_comments` 返回 `Access Deny`，
+ * `m.kugou.com/app/i/getSongComment.php` 返回 `No Action Found`。
+ * 与其编造签名算法（会随客户端版本失效），不如明确不支持。
  */
 class KgApi : PlatformApi {
 
@@ -274,7 +282,64 @@ class KgApi : PlatformApi {
             album = str("album_name").orEmpty(),
             durationMs = (int("duration") ?: 0).toLong() * 1000L,
             coverUrl = cover,
+            maxQuality = kgMaxQuality(this),
+            qualitySizes = kgQualitySizes(this),
+            // album_id / album_audio_id 供「酷狗概念版」音源取播放地址使用（非空才有意义）。
+            // ⚠️ 必须用 `album_audio_id` 而非 `audio_id`：两者是**不同**字段，`/v5/url` 只认前者，
+            //    传错的 non-zero 值会污染请求（免费歌也判受限，见 KgLiteApi 注释）。
+            extra = buildMap {
+                long("album_id")?.takeIf { it > 0 }?.let { put("album_id", it.toString()) }
+                long("album_audio_id")?.takeIf { it > 0 }?.let { put("album_audio_id", it.toString()) }
+            },
         )
+    }
+
+    /**
+     * 从列表接口元数据推断该曲最高可用档位（**不发额外请求**）。
+     *
+     * 字段可用性按接口而异（实测 2026-10-01）：
+     * - 搜索 `/api/v3/search/song`：`filesize`(128) / `320filesize`(320) / `sqfilesize`(无损)
+     * - 榜单 `/api/v3/rank/song`：额外提供 `filesize_high`(无损 24bit，`bitrate_high`≈1704kbps)
+     *   与 `filesize_super`（概念版最高档，实测恒 0）
+     * - 歌单 `/api/v3/special/song`：同搜索，含 sq/320/128 三档体积
+     *
+     * 体积 > 0 即该档有资源（实测：无 SQ 的歌 `sqfilesize=0`）。
+     * `filesize_high` → FLAC24 与概念版链路自洽（`kgQualityChain` 把 FLAC24 映射到 `high` 档）。
+     */
+    private fun kgMaxQuality(el: JsonElement): String {
+        fun size(key: String): Long = el.long(key) ?: 0L
+
+        /** 该档位是否有可用资源：体积 > 0，或特权值（privilege）> 0 */
+        fun avail(sizeKey: String, privKey: String): Boolean =
+            size(sizeKey) > 0L || (el.int(privKey) ?: 0) > 0
+
+        return when {
+            avail("filesize_super", "privilege_super") -> PlayQuality.HIRES
+            avail("filesize_high", "privilege_high") -> PlayQuality.FLAC24
+            avail("sqfilesize", "sqprivilege") -> PlayQuality.LOSSLESS
+            avail("320filesize", "320privilege") -> PlayQuality.HIGH
+            size("filesize") > 0L -> PlayQuality.STANDARD
+            else -> null
+        }?.id.orEmpty()
+    }
+
+    /**
+     * 酷狗列表接口**逐档给出真实文件体积** —— 这是三平台里唯一能确凿判断
+     * 「某档到底有没有资源」的来源，直接透传给 UI 做精确灰化。
+     *
+     * 只写入**接口确实返回**的键（`0` = 该档无资源，缺键 = 未知），
+     * 因此不能把 `filesize` 缺失当成「无 128K」——只有出现过的字段才可信。
+     * 键用 [PlayQuality.id]，与音质菜单的档位一一对应。
+     */
+    private fun kgQualitySizes(el: JsonElement): Map<String, String> = buildMap {
+        fun put(key: String, qualityId: String) {
+            el.long(key)?.let { put(qualityId, it.toString()) }
+        }
+        put("filesize_super", PlayQuality.HIRES.id)
+        put("filesize_high", PlayQuality.FLAC24.id)
+        put("sqfilesize", PlayQuality.LOSSLESS.id)
+        put("320filesize", PlayQuality.HIGH.id)
+        put("filesize", PlayQuality.STANDARD.id)
     }
 
     private fun JsonElement.toPlaylist(): PlaylistSummary? {

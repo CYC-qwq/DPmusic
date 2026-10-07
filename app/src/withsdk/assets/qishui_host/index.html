@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>汽水登录宿主页</title>
+  <style>
+    /* MFA 由官方 SDK 渲染到 #uc-second-verify，这里让它铺满可见区域 */
+    html,body{margin:0;padding:0;background:#f5f6f8;font-family:system-ui,-apple-system,sans-serif}
+    #uc-second-verify{min-height:100vh}
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+  (function () {
+    var D = '$' + '$';                 // $$（模板里不能直接写两个美元）
+    var AID = 386088;
+    var BASE = '/__host__/';           // 本地资源前缀（由 Android 端 shouldInterceptRequest 接管）
+
+    function reply(cbId, obj) {
+      try { AndroidBridge.onResult(cbId, JSON.stringify(obj)); } catch (e) {}
+    }
+function loadScript(src) {
+      return new Promise(function (res, rej) {
+        var s = document.createElement('script');
+        s.src = src; s.onload = res; s.onerror = function () { rej(new Error('load fail ' + src)); };
+        document.head.appendChild(s);
+      });
+    }
+    function texts(sel) {
+      return [].slice.call(document.querySelectorAll(sel)).map(function (x) {
+        return (x.innerText || '').replace(/\s+/g, '');
+      });
+    }
+    function rootEl() { return document.getElementById('uc-second-verify'); }
+
+    // ---------- 初始化（与已验证的 v3 架构一致）----------
+    window.__qsReady = false;
+    window.__qsInitErr = '';
+    window.__qsInit = (async function () {
+      try {
+        // ★ 关键：加载官方 sdk-glue（bdms 签名），否则 /passport 请求会被判「非官方渠道」→ ec=7
+        await loadScript(BASE + 'sdk-glue.js');
+        if (typeof window._SdkGlueInit === 'function') {
+          window._SdkGlueInit({
+            self: { aid: AID, pageId: 24554 },
+            bdms: { aid: AID, paths: ['/passport'] }
+          });
+        }
+        await loadScript(BASE + 'react.js');
+        await loadScript(BASE + 'react-dom.js');
+        window.ucSecondVerifyReact = window.React;
+        window.ucSecondVerifyReactDom = window.ReactDOM;
+        window[D + 'secondVerificationVersion'] = '1.0.0.428-web';
+        window[D + 'secondVerificationOptions'] = { aid: AID, host: 'https://api.qishui.com' };
+        window[D + 'secondVerificationRequestHost'] = 'https://api.qishui.com';
+        window.transportPort = {
+          receiveTransport: function () {}, registerTransport: function () {},
+          sendTransport: function () {}, on: function () {}, off: function () {}
+        };
+        await loadScript(BASE + 'mfa.js');                 // → window.ucWebSecondVerify
+        var mod = await import(BASE + 'sdk/assets/renderer-bLP9ux3C.js');
+        var W = mod.W || mod.WebInterfaceSdk;
+        var dev = '7310000000000000001', iid = '8010000000000000001';
+        window.__sdk = new W({
+          aid: AID, isOversea: false, region: 'cn',
+          host: 'https://api.qishui.com', scope: 'web',
+          generalParams: {
+            device_id: dev, install_id: iid,
+            did: dev, iid: iid,
+            device_platform: 'PC', version_code: '2.1.0'
+          }
+        });
+        window.__qsReady = true;
+        reply('init', { ok: true, ucWeb: typeof window.ucWebSecondVerify, login: !!(window.__sdk && window.__sdk.login) });
+      } catch (e) {
+        window.__qsInitErr = String(e && e.stack || e).slice(0, 400);
+        reply('init', { ok: false, err: window.__qsInitErr });
+      }
+    })();
+
+    // ---------- 供 Kotlin 调用 ----------
+    window.__qs = {
+      /** 发码 */
+      sendCode: async function (cbId, mobile) {
+        try {
+          var r = await window.__sdk.login.sendCode({ mobile: mobile });
+          reply(cbId, { ok: true, raw: JSON.stringify(r).slice(0, 600) });
+        } catch (e) {
+          var o = e || {};
+          reply(cbId, {
+            ok: (o.error_code === 0 || o.error_code === '0'),
+            error_code: o.error_code,
+            description: o.description || o.message || String(e)
+          });
+        }
+      },
+      /** 登录（2046 时 SDK 会自动渲染 MFA 到本页） */
+      login: async function (cbId, mobile, code) {
+        window.__lastLogin = { done: false };
+        try {
+          window.__sdk.login.smsLogin({ mobile: mobile, code: code })
+            .then(function (r) { window.__lastLogin = { done: true, ok: true, raw: JSON.stringify(r).slice(0, 600) }; })
+            .catch(function (e) {
+              var o = e || {};
+              window.__lastLogin = { done: true, error_code: o.error_code, description: o.description || o.message || String(e) };
+            });
+          reply(cbId, { started: true });
+        } catch (e) { reply(cbId, { started: false, err: String(e).slice(0, 200) }); }
+      },
+      /** 登录状态（含 MFA 是否已渲染） */
+      loginState: function (cbId) {
+        var seen = !!rootEl();
+        var txt = seen ? (rootEl().innerText || '').replace(/\s+/g, ' | ').slice(0, 200) : '';
+        reply(cbId, { state: window.__lastLogin || null, mfaRendered: seen, mfaText: txt });
+      },
+      /** MFA 可用方式 */
+      ways: function (cbId) {
+        var list = texts('#uc-second-verify .uc-ui-lists_item');
+        reply(cbId, { ways: list });
+      },
+      /** 选择 MFA 方式（按界面文案） */
+      pick: function (cbId, label) {
+        var its = [].slice.call(document.querySelectorAll('#uc-second-verify .uc-ui-lists_item'));
+        for (var i = 0; i < its.length; i++) {
+          if ((its[i].innerText || '').replace(/\s+/g, '').indexOf(label) >= 0) { its[i].click(); reply(cbId, { ok: true }); return; }
+        }
+        // 若已在子页（有输入框），直接算命中
+        var inp = rootEl() && rootEl().querySelector('input');
+        reply(cbId, { ok: !!inp });
+      },
+      /** MFA 子页信息（输入框类型/提示） */
+      mfaInfo: function (cbId) {
+        var r = rootEl(); var inp = r ? r.querySelector('input') : null;
+        reply(cbId, {
+          hasInput: !!inp,
+          secret: inp ? inp.type === 'password' : false,
+          placeholder: inp ? inp.placeholder : '',
+          text: r ? (r.innerText || '').replace(/\s+/g, ' | ').slice(0, 300) : ''
+        });
+      },
+      /** 提交 MFA（填值 + 点「验证」；「验证」是 div 不是 button） */
+      submit: function (cbId, value) {
+        var r = rootEl();
+        if (!r) { reply(cbId, { ok: false, description: 'MFA 未渲染' }); return; }
+        var inp = r.querySelector('input');
+        if (inp) {
+          var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(inp, value);
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        var cands = [].slice.call(r.querySelectorAll('div,button,span,a'))
+          .filter(function (e) { return e.children.length === 0 && (e.innerText || '').trim() === '验证'; });
+        var tgt = cands[0] || [].slice.call(r.querySelectorAll('div,button,span,a'))
+          .filter(function (e) { return (e.innerText || '').trim() === '验证'; }).pop();
+        if (tgt) { tgt.click(); reply(cbId, { ok: true }); }
+        else reply(cbId, { ok: false, description: inp ? '未找到验证按钮' : '无输入框' });
+      },
+      /** 当前 2046 是否已被 SDK 收尾（__lastLogin.raw 非空即成功） */
+      finishState: function (cbId) { reply(cbId, { state: window.__lastLogin || null }); }
+    };
+  })();
+  </script>
+</body>
+</html>

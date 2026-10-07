@@ -10,6 +10,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +28,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Refresh
@@ -58,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -78,6 +82,7 @@ import com.dpmusic.app.core.audio.AudioRecognizer
 import com.dpmusic.app.core.audio.AudioSampler
 import com.dpmusic.app.core.audio.CaptureForegroundService
 import com.dpmusic.app.core.audio.KgRecognizer
+import com.dpmusic.app.core.audio.QqRecognizer
 import com.dpmusic.app.core.model.MusicPlatform
 import com.dpmusic.app.core.model.Song
 import com.dpmusic.app.core.net.HttpException
@@ -94,6 +99,36 @@ import kotlinx.coroutines.launch
 /** 拾音方式：麦克风 / 系统播放捕获 / 音频文件 */
 enum class AudioPickSource { MIC, SYSTEM, FILE }
 
+/**
+ * 识别模式：听歌识曲 / 哼歌识曲（对应 QQ 客户端两个 Tab）。
+ *
+ * ⚠️ 两个模式的**可用引擎不同**：
+ * - 听歌识曲：QQ / 酷狗 / 网易云 三引擎并行；
+ * - 哼歌识曲：**仅 QQ 单引擎**。酷狗 `music_trackid_mulit` 与网易云 `shazam_v2` 都是
+ *   原曲指纹匹配库，**没有哼唱通道**，喂哼唱音频只会返回空 —— 并行调用既浪费请求，
+ *   又会在结果区给出误导性的「未匹配」。
+ */
+enum class RecognizeMode(val label: String, val hint: String) {
+    LISTEN("听歌识曲", "识别周围播放的歌曲"),
+    HUMMING("哼歌识曲", "自己哼唱旋律来识曲"),
+    ;
+
+    /** 采集时长（秒）：哼唱需覆盖完整旋律，稍长一些 */
+    val durationSec: Int
+        get() = if (this == HUMMING) 15 else 12
+
+    /** 对应 QQ 客户端的识别通道 */
+    val qqMode: QqRecognizer.Mode
+        get() = if (this == HUMMING) QqRecognizer.Mode.HUMMING else QqRecognizer.Mode.LISTEN
+
+    /**
+     * 是否只能跑 QQ 引擎。
+     * 哼唱依赖服务端旋律检索（响应字段 `is_humming`），目前只有 QQ 提供；其余两家无此能力。
+     */
+    val isQqOnly: Boolean
+        get() = this == HUMMING
+}
+
 /** 听歌识曲状态机 */
 sealed interface RecognizeState {
     /** 待开始 */
@@ -109,10 +144,11 @@ sealed interface RecognizeState {
     /** 指纹编码 + 接口匹配中 */
     object Working : RecognizeState
 
-    /** 双引擎识别结果（网易云 + 酷狗 并行） */
+    /** 识别结果（听歌 = 三引擎；哼唱 = 仅 QQ，其余两个恒为 Disabled） */
     data class Results(
         val wy: EngineState,
         val kg: EngineState,
+        val qq: EngineState,
     ) : RecognizeState
 
     /** 失败（录音 / 权限等整体失败） */
@@ -129,9 +165,15 @@ sealed interface EngineState {
 
     /** 失败 */
     data class Failed(val message: String) : EngineState
+
+    /**
+     * 不参与本次识别（如哼唱模式下的酷狗 / 网易云）。
+     * 与 [Failed] 区分：不是出错，也不计入「全部未匹配」判定。
+     */
+    object Skipped : EngineState
 }
 
-/** 统一识别结果条目（双引擎共用） */
+/** 统一识别结果条目（各引擎共用） */
 data class RecognizeItem(
     val song: Song,
     val tag: String?,
@@ -165,8 +207,9 @@ sealed interface SearchViewState {
 
 /**
  * 听歌识曲 Sheet：
+ * - 两种模式：听歌识曲（三引擎并行）/ 哼歌识曲（仅 QQ 哼唱通道）；
  * - 三种拾音方式：麦克风（环境音）/ 系统播放捕获（内部音频，Android 10+）/ 音频文件（SAF）；
- * - 采集 10 秒 → 双引擎并行匹配（酷狗 PCM 直传 / 网易云 afp 指纹取前 6 秒窗口）；
+ * - 采集 12s（听歌）/ 15s（哼唱）→ 并行匹配（QQ 音乐 Base64(PCM) / 酷狗 PCM 直传 / 网易云 afp 指纹取前 6 秒窗口）；
  * - 候选列表支持播放 / 收藏 / 长按加歌单；
  * - 引擎随 Sheet 创建与销毁，音频仅内存处理不落盘。
  */
@@ -181,6 +224,7 @@ fun RecognitionSheet(
     val state by vm.state.collectAsStateWithLifecycle()
     val searchView by vm.searchView.collectAsStateWithLifecycle()
     val favorites by AppContainer.favorites.favorites.collectAsStateWithLifecycle()
+    val mode by vm.mode.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val addHost = rememberAddToPlaylistHost()
 
@@ -303,10 +347,19 @@ fun RecognitionSheet(
                         }
                     }
                     Text(
-                        text = if (searchView != null) "找原唱" else "听歌识曲",
+                        text = if (searchView != null) "找原唱" else mode.label,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+                // 听歌 / 哼歌 模式切换（仅空闲态显示，避免打断进行中的识别）
+                if (searchView == null && state is RecognizeState.Idle) {
+                    Spacer(Modifier.height(14.dp))
+                    ModeSwitch(
+                        selected = mode,
+                        onSelect = vm::setMode,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
                 Spacer(Modifier.height(20.dp))
@@ -324,14 +377,20 @@ fun RecognitionSheet(
                 } else {
                     when (val s = state) {
                         is RecognizeState.Idle -> IdleContent(
+                            mode = mode,
                             onMic = onPickMic,
                             onSystem = onPickSystem,
                             onFile = onPickFile,
                         )
-                        is RecognizeState.Recording -> RecordingContent(state = s, onCancel = vm::cancel)
+                        is RecognizeState.Recording -> RecordingContent(
+                            state = s,
+                            mode = mode,
+                            onCancel = vm::cancel,
+                        )
                         is RecognizeState.Working -> WorkingContent()
                         is RecognizeState.Results -> ResultsContent(
                             results = s,
+                            mode = mode,
                             favorites = favorites,
                             onPlay = onPlay,
                             onToggleFavorite = vm::toggleFavorite,
@@ -351,10 +410,81 @@ fun RecognitionSheet(
     }
 }
 
+/* ---------------- 听歌 / 哼歌 模式切换 ---------------- */
+
+/**
+ * 模式切换（分段式单选，2 项）。
+ * 选中态用主色填充；未选中透明。点击回调受控于上层（仅空闲态可切）。
+ */
+@Composable
+private fun ModeSwitch(
+    selected: RecognizeMode,
+    onSelect: (RecognizeMode) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .height(44.dp)
+            .clip(MaterialTheme.shapes.extraLarge)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RecognizeMode.entries.forEach { m ->
+            val isSelected = m == selected
+            Surface(
+                onClick = { onSelect(m) },
+                shape = MaterialTheme.shapes.extraLarge,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    androidx.compose.ui.graphics.Color.Transparent
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(3.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Icon(
+                        imageVector = if (m == RecognizeMode.HUMMING) {
+                            Icons.Outlined.GraphicEq
+                        } else {
+                            Icons.Outlined.Mic
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                        tint = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = m.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
 /* ---------------- 待开始（拾音方式选择） ---------------- */
 
 @Composable
 private fun IdleContent(
+    mode: RecognizeMode,
     onMic: () -> Unit,
     onSystem: () -> Unit,
     onFile: () -> Unit,
@@ -365,7 +495,11 @@ private fun IdleContent(
     )
     Spacer(Modifier.height(4.dp))
     Text(
-        text = "识别周围声音 / 手机内部播放 / 本地音频文件",
+        text = if (mode == RecognizeMode.HUMMING) {
+            "哼唱 ${mode.durationSec} 秒旋律，或用以下方式输入"
+        } else {
+            "识别周围声音 / 手机内部播放 / 本地音频文件"
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -376,8 +510,8 @@ private fun IdleContent(
     ) {
         PickSourceCard(
             icon = Icons.Outlined.Mic,
-            title = "麦克风",
-            desc = "周围环境音",
+            title = if (mode == RecognizeMode.HUMMING) "哼唱" else "麦克风",
+            desc = if (mode == RecognizeMode.HUMMING) "对着手机哼" else "周围环境音",
             onClick = onMic,
             modifier = Modifier.weight(1f),
         )
@@ -398,7 +532,11 @@ private fun IdleContent(
     }
     Spacer(Modifier.height(10.dp))
     Text(
-        text = "识别约需 10 秒；系统播放捕获需 Android 10+ 授权",
+        text = if (mode == RecognizeMode.HUMMING) {
+            "哼唱约需 ${mode.durationSec} 秒；旋律清晰、节奏平稳更容易命中（走 QQ 哼唱通道，不调用酷狗 / 网易云）"
+        } else {
+            "识别约需 ${mode.durationSec} 秒；系统播放捕获需 Android 10+ 授权"
+        },
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
@@ -446,8 +584,13 @@ private fun PickSourceCard(
 /* ---------------- 录音中 ---------------- */
 
 @Composable
-private fun RecordingContent(state: RecognizeState.Recording, onCancel: () -> Unit) {
-    val remaining = ((1f - state.progress) * 10f).coerceAtLeast(0f)
+private fun RecordingContent(
+    state: RecognizeState.Recording,
+    mode: RecognizeMode,
+    onCancel: () -> Unit,
+) {
+    val total = mode.durationSec.toFloat()
+    val remaining = ((1f - state.progress) * total).coerceAtLeast(0f)
     val isSystem = state.source == AudioPickSource.SYSTEM
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(120.dp)) {
         CircularProgressIndicator(
@@ -457,7 +600,11 @@ private fun RecordingContent(state: RecognizeState.Recording, onCancel: () -> Un
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
         Icon(
-            imageVector = if (isSystem) Icons.Outlined.PhoneAndroid else Icons.Outlined.Mic,
+            imageVector = when {
+                isSystem -> Icons.Outlined.PhoneAndroid
+                mode == RecognizeMode.HUMMING -> Icons.Outlined.GraphicEq
+                else -> Icons.Outlined.Mic
+            },
             contentDescription = null,
             modifier = Modifier
                 .size(36.dp)
@@ -467,12 +614,20 @@ private fun RecordingContent(state: RecognizeState.Recording, onCancel: () -> Un
     }
     Spacer(Modifier.height(16.dp))
     Text(
-        text = (if (isSystem) "正在捕获系统播放… %.1fs" else "正在聆听… %.1fs").format(remaining),
+        text = when {
+            isSystem -> "正在捕获系统播放… %.1fs".format(remaining)
+            mode == RecognizeMode.HUMMING -> "正在聆听哼唱… %.1fs".format(remaining)
+            else -> "正在聆听… %.1fs".format(remaining)
+        },
         style = MaterialTheme.typography.titleMedium,
     )
     Spacer(Modifier.height(4.dp))
     Text(
-        text = if (isSystem) "请保持音乐继续播放" else "保持环境安静，靠近音源效果更佳",
+        text = when {
+            isSystem -> "请保持音乐继续播放"
+            mode == RecognizeMode.HUMMING -> "哼唱旋律（嗯/啦即可），保持节奏平稳"
+            else -> "保持环境安静，靠近音源效果更佳"
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -501,10 +656,11 @@ private fun WorkingContent() {
 }
 
 /* ---------------- 结果列表 ---------------- */
-
+/** 结果列表 */
 @Composable
 private fun ResultsContent(
     results: RecognizeState.Results,
+    mode: RecognizeMode,
     favorites: List<Song>,
     onPlay: (Song) -> Unit,
     onToggleFavorite: (Song) -> Unit,
@@ -514,9 +670,12 @@ private fun ResultsContent(
 ) {
     val wyCount = (results.wy as? EngineState.Done)?.items?.size ?: 0
     val kgCount = (results.kg as? EngineState.Done)?.items?.size ?: 0
-    val total = wyCount + kgCount
-    val bothEmpty = (results.kg as? EngineState.Done)?.items?.isEmpty() == true &&
-        (results.wy as? EngineState.Done)?.items?.isEmpty() == true
+    val qqCount = (results.qq as? EngineState.Done)?.items?.size ?: 0
+    val total = wyCount + kgCount + qqCount
+    // 仅统计真正参与的引擎：Skipped 既不算「未匹配」也不该触发引导提示
+    val allEmpty = listOf(results.kg, results.wy, results.qq)
+        .filter { it !== EngineState.Skipped }
+        .all { (it as? EngineState.Done)?.items?.isEmpty() == true }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
@@ -539,7 +698,11 @@ private fun ResultsContent(
     }
     Spacer(Modifier.height(4.dp))
     Text(
-        text = "双引擎并行 · 点击播放 · 长按加歌单 · 🔍找原唱",
+        text = if (mode.isQqOnly) {
+            "QQ 哼唱通道 · 点击播放 · 长按加歌单 · 🔍找原唱"
+        } else {
+            "三引擎并行 · 点击播放 · 长按加歌单 · 🔍找原唱"
+        },
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth(),
@@ -550,7 +713,17 @@ private fun ResultsContent(
             .fillMaxWidth()
             .heightIn(max = 380.dp),
     ) {
-        // 酷狗为主力引擎，优先展示
+        // QQ 音乐引擎优先展示；酷狗 / 网易云在哼唱模式下为 Skipped（不渲染）
+        engineItems(
+            state = results.qq,
+            keyPrefix = "qq",
+            platform = MusicPlatform.QQ,
+            favorites = favorites,
+            onPlay = onPlay,
+            onToggleFavorite = onToggleFavorite,
+            onLongPress = onLongPress,
+            onSearchVersion = onSearchVersion,
+        )
         engineItems(
             state = results.kg,
             keyPrefix = "kg",
@@ -571,11 +744,15 @@ private fun ResultsContent(
             onLongPress = onLongPress,
             onSearchVersion = onSearchVersion,
         )
-        // 双引擎均无匹配：给出提升命中率的引导提示
-        if (bothEmpty) {
+        // 参与识别的引擎均无匹配：给出提升命中率的引导提示（Skipped 不计入）
+        if (allEmpty) {
             item(key = "empty_hint") {
                 Text(
-                    text = "没识别到？试试调整音量或靠近音源，也可换个拾音方式再试",
+                    text = if (mode.isQqOnly) {
+                        "没识别到？哼唱建议用「嗯/啦」唱清主旋律，节奏平稳、音高准确更容易命中"
+                    } else {
+                        "没识别到？试试调整音量或靠近音源，也可换个拾音方式再试"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -600,6 +777,8 @@ private fun LazyListScope.engineItems(
     onLongPress: (Song) -> Unit,
     onSearchVersion: (Song) -> Unit,
 ) {
+    // 该引擎未参与本次识别（哼唱模式下的酷狗 / 网易云）：不渲染分组头
+    if (state === EngineState.Skipped) return
     item(key = "${keyPrefix}_header") {
         EngineHeader(platform = platform, state = state)
     }
@@ -638,6 +817,7 @@ private fun LazyListScope.engineItems(
         is EngineState.Failed -> item(key = "${keyPrefix}_failed") {
             EngineStatusText(state.message, isError = true)
         }
+        is EngineState.Skipped -> Unit   // 已在函数开头 return，仅为穷尽性保留
     }
 }
 
@@ -671,6 +851,11 @@ private fun EngineHeader(platform: MusicPlatform, state: EngineState) {
                 text = "识别失败",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error,
+            )
+            is EngineState.Skipped -> Text(
+                text = "未参与",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -841,22 +1026,33 @@ class RecognitionViewModel : ViewModel() {
     private val _state = MutableStateFlow<RecognizeState>(RecognizeState.Idle)
     val state: StateFlow<RecognizeState> = _state.asStateFlow()
 
+    /** 当前识别模式（听歌 / 哼歌），由 UI 切换 */
+    private val _mode = MutableStateFlow(RecognizeMode.LISTEN)
+    val mode: StateFlow<RecognizeMode> = _mode.asStateFlow()
+
+    /** 切换识别模式（仅空闲态允许，避免打断进行中的识别） */
+    fun setMode(mode: RecognizeMode) {
+        if (job?.isActive == true) return
+        _mode.value = mode
+    }
+
     private var job: Job? = null
 
     private val _searchView = MutableStateFlow<SearchViewState?>(null)
     val searchView: StateFlow<SearchViewState?> = _searchView.asStateFlow()
     private var searchJob: Job? = null
 
-    /** 麦克风识别：录 10 秒 → 双引擎并行匹配 */
+    /** 麦克风识别：按当前模式采集 → 并行匹配（听歌三引擎 / 哼唱仅 QQ） */
     fun startMic(engine: AudioFingerprintEngine) {
         if (job?.isActive == true) return
+        val mode = _mode.value
         job = viewModelScope.launch {
             try {
                 _state.value = RecognizeState.Recording(0f, 0f)
-                val pcm = AudioSampler.record(10_000) { progress, level ->
+                val pcm = AudioSampler.record(mode.durationSec * 1000L) { progress, level ->
                     _state.value = RecognizeState.Recording(progress, level)
                 }
-                runEngines(engine, pcm)
+                runEngines(engine, pcm, mode)
             } catch (e: TimeoutCancellationException) {
                 _state.value = RecognizeState.Failed("识别超时，请重试")
             } catch (e: CancellationException) {
@@ -868,9 +1064,10 @@ class RecognitionViewModel : ViewModel() {
         }
     }
 
-    /** 系统播放识别：捕获手机内部音频 10 秒 → 双引擎并行匹配（Android 10+） */
+    /** 系统播放识别：捕获手机内部音频 → 并行匹配（Android 10+）；听歌三引擎 / 哼唱仅 QQ */
     fun startSystem(engine: AudioFingerprintEngine, resultCode: Int, data: Intent) {
         if (job?.isActive == true) return
+        val mode = _mode.value
         job = viewModelScope.launch {
             if (!AudioPlaybackCapturer.isSupported) {
                 _state.value = RecognizeState.Failed("系统播放捕获需要 Android 10 及以上系统")
@@ -887,10 +1084,10 @@ class RecognitionViewModel : ViewModel() {
                 val proj = AudioPlaybackCapturer.obtainProjection(resultCode, data)
                     ?: throw IllegalStateException("无法获取系统音频捕获权限")
                 projection = proj
-                val pcm = AudioPlaybackCapturer.capture(proj, 10_000) { progress, level ->
+                val pcm = AudioPlaybackCapturer.capture(proj, mode.durationSec * 1000L) { progress, level ->
                     _state.value = RecognizeState.Recording(progress, level, AudioPickSource.SYSTEM)
                 }
-                runEngines(engine, pcm)
+                runEngines(engine, pcm, mode)
             } catch (e: TimeoutCancellationException) {
                 _state.value = RecognizeState.Failed("识别超时，请重试")
             } catch (e: CancellationException) {
@@ -905,15 +1102,20 @@ class RecognitionViewModel : ViewModel() {
         }
     }
 
-    /** 音频文件识别：解码本地文件 → 双引擎并行匹配 */
+    /** 音频文件识别：解码本地文件 → 并行匹配；听歌三引擎 / 哼唱仅 QQ */
     fun startFile(engine: AudioFingerprintEngine, uri: Uri) {
         if (job?.isActive == true) return
+        val mode = _mode.value
         job = viewModelScope.launch {
             try {
-                _state.value = RecognizeState.Results(EngineState.Loading, EngineState.Loading)
+                _state.value = RecognizeState.Results(
+                    wy = if (mode.isQqOnly) EngineState.Skipped else EngineState.Loading,
+                    kg = if (mode.isQqOnly) EngineState.Skipped else EngineState.Loading,
+                    qq = EngineState.Loading,
+                )
                 val pcm = AudioFileDecoder.decodeForRecognize(AppContainer.appContext, uri)
                     ?: throw IllegalStateException("无法解析该音频文件（格式不支持或内容为空）")
-                runEngines(engine, pcm)
+                runEngines(engine, pcm, mode)
             } catch (e: TimeoutCancellationException) {
                 _state.value = RecognizeState.Failed("识别超时，请重试")
             } catch (e: CancellationException) {
@@ -930,12 +1132,48 @@ class RecognitionViewModel : ViewModel() {
         _state.value = RecognizeState.Failed(message)
     }
 
-    /** 双引擎并行识别（酷狗 PCM 直传 + 网易云指纹），等待全部完成 */
-    private suspend fun runEngines(engine: AudioFingerprintEngine, pcm: FloatArray) = coroutineScope {
-        _state.value = RecognizeState.Results(EngineState.Loading, EngineState.Loading)
-        // 双引擎并行：酷狗（主力，PCM 直传）+ 网易云（指纹匹配）
-        launch { runKgEngine(pcm) }
-        launch { runWyEngine(engine, pcm) }
+    /**
+     * 并行识别（等待全部完成）。
+     *
+     * - [RecognizeMode.LISTEN]：QQ 音乐 Base64(PCM) + 酷狗 PCM 直传 + 网易云指纹，三引擎并行；
+     * - [RecognizeMode.HUMMING]：**仅 QQ**（`fpType=4`）。酷狗 / 网易云无哼唱通道，
+     *   标记为 [EngineState.Skipped] 而非发起注定为空的请求。
+     */
+    private suspend fun runEngines(
+        engine: AudioFingerprintEngine,
+        pcm: FloatArray,
+        mode: RecognizeMode,
+    ) = coroutineScope {
+        _state.value = RecognizeState.Results(
+            wy = if (mode.isQqOnly) EngineState.Skipped else EngineState.Loading,
+            kg = if (mode.isQqOnly) EngineState.Skipped else EngineState.Loading,
+            qq = EngineState.Loading,
+        )
+        if (!mode.isQqOnly) {
+            launch { runKgEngine(pcm) }
+            launch { runWyEngine(engine, pcm) }
+        }
+        launch { runQqEngine(pcm, mode) }
+    }
+
+    /**
+     * QQ 音乐引擎：8kHz PCM → Base64 → youtu/humming/search。
+     *
+     * 实测约束：请求体必须 8kHz（16kHz 会返回 subcode=-6）。
+     * 听歌/哼唱走不同 `fpType`（见 [QqRecognizer.Mode]），且服务端对时长有下限
+     * （听歌 ≥15s / 哼唱 ≥11s，源码 `Recognizer.I1`）。
+     * [pcm] 已是 8kHz 预处理结果，与 [AudioSampler.floatToInt16Le] 直接兼容。
+     */
+    private suspend fun runQqEngine(pcm: FloatArray, mode: RecognizeMode) {
+        try {
+            val bytes = AudioSampler.floatToInt16Le(pcm)
+            val candidates = QqRecognizer.recognize(bytes, mode.qqMode)
+            updateResult { it.copy(qq = EngineState.Done(candidates.map { c -> RecognizeItem(c.song, null) })) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            updateResult { it.copy(qq = EngineState.Failed(friendlyMessage(e))) }
+        }
     }
 
     /** 网易云引擎：指纹编码 → 匹配接口（官方管线为 6 秒窗口，取录音前 6 秒） */
@@ -967,7 +1205,7 @@ class RecognitionViewModel : ViewModel() {
         }
     }
 
-    /** 更新双引擎结果（仅当处于 Results 状态时） */
+    /** 更新引擎结果（仅当处于 Results 状态时） */
     private fun updateResult(transform: (RecognizeState.Results) -> RecognizeState.Results) {
         _state.update { current -> if (current is RecognizeState.Results) transform(current) else current }
     }

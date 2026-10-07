@@ -36,6 +36,20 @@ object SongLinkParser {
         Regex("""kugou\.com/\S*?[?&#]hash=([0-9A-Fa-f]{16,})"""),
     )
 
+    private val QS_PATTERNS = listOf(
+        // https://www.douyin.com/qishui/song/6696534426169378817
+        // https://m.douyin.com/qishui/song/6696534426169378817
+        Regex("""douyin\.com/\S*?/song/(\d+)"""),
+        Regex("""douyin\.com/\S*?[?&]track_id=(\d+)"""),
+    )
+
+    private val BB_PATTERNS = listOf(
+        // https://www.bilibili.com/video/BV1BZbSzZEGT
+        Regex("""bilibili\.com/\S*?video/(BV[0-9A-Za-z]+)"""),
+        // https://www.bilibili.com/video/BV1BZbSzZEGT/?p=1
+        Regex("""bilibili\.com/\S*?[?&]bvid=(BV[0-9A-Za-z]+)"""),
+    )
+
     /** 解析链接（或含链接的分享文案）：识别成功返回平台 + 歌曲 ID；无法识别返回 null */
     fun parse(raw: String): ParsedSongLink? {
         val text = raw.trim()
@@ -50,6 +64,13 @@ object SongLinkParser {
         KG_PATTERNS.firstNotNullOfOrNull { it.find(text) }?.let {
             // 酷狗 hash 统一小写，保证与搜索结果 / 播放解析的 stableKey 一致
             return ParsedSongLink(MusicPlatform.KG, it.groupValues[1].lowercase())
+        }
+        QS_PATTERNS.firstNotNullOfOrNull { it.find(text) }?.let {
+            return ParsedSongLink(MusicPlatform.QS, it.groupValues[1])
+        }
+        // B 站：仅支持 BV 号直链（av 号需先转 BV，不在链接解析里做；可用搜索代替）
+        BB_PATTERNS.firstNotNullOfOrNull { it.find(text) }?.let {
+            return ParsedSongLink(MusicPlatform.BB, it.groupValues[1])
         }
         return null
     }

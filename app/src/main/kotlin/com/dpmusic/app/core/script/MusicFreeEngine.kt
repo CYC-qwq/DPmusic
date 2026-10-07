@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -62,6 +64,33 @@ sealed interface PluginEngineStatus {
 }
 
 /**
+ * 插件引擎契约（[MusicFreeEngine] 的实现维度）。
+ *
+ * 与 [ScriptEngine] 同因：让 [PluginEnginePool] 能在 JVM 单测里用假引擎驱动。
+ */
+interface PluginEngine {
+    val status: StateFlow<PluginEngineStatus>
+
+    fun load(pluginId: String, source: String, userVariables: Map<String, String>)
+
+    fun destroy()
+
+    fun queryMemoryUsage(onResult: (Long) -> Unit)
+
+    /** 调用插件方法并等待响应 */
+    suspend fun invoke(
+        method: String,
+        argsJson: String,
+        timeoutMs: Long = DEFAULT_CALL_TIMEOUT_MS,
+    ): JSONObject
+
+    companion object {
+        /** 默认调用超时，与 [MusicFreeEngine] 内部约定一致 */
+        const val DEFAULT_CALL_TIMEOUT_MS = 25_000L
+    }
+}
+
+/**
  * MusicFree 插件引擎（QuickJS）。
  *
  * 与 [UserApiEngine]（LX 脚本）并列的第二套脚本运行时，二者互不干扰：
@@ -71,9 +100,18 @@ sealed interface PluginEngineStatus {
  * - 插件发起的网络请求由本引擎用 OkHttp 代执行（UA / 超时 / 二进制 / 表单均支持）；
  * - 宿主 → 插件调用为「异步桥」：投递到工作线程触发，插件完成后回调响应。
  */
-class MusicFreeEngine(private val context: Context) {
-
-    private val networkExecutor = Executors.newCachedThreadPool()
+class MusicFreeEngine(private val context: Context) : PluginEngine {
+    /**
+     * 网络线程池（插件 `request` 的 HTTP 执行）。
+     *
+     * 与 [UserApiEngine] 同因：`newCachedThreadPool` 线程数无上限，
+     * 突发并发会瞬时创建大量线程。这里改为有界（核心 2 / 上限 8 / 其余排队）。
+     */
+    private val networkExecutor = ThreadPoolExecutor(
+        2, 8, 30L, TimeUnit.SECONDS,
+        LinkedBlockingQueue(),
+        { r -> Thread(r, "mf-net").apply { isDaemon = true } },
+    )
 
     private var thread: HandlerThread? = null
     private var worker: Handler? = null
@@ -85,7 +123,7 @@ class MusicFreeEngine(private val context: Context) {
     private val pendingCalls = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
     private val _status = MutableStateFlow<PluginEngineStatus>(PluginEngineStatus.Idle)
-    val status: StateFlow<PluginEngineStatus> = _status.asStateFlow()
+    override val status: StateFlow<PluginEngineStatus> = _status.asStateFlow()
 
     @Synchronized
     private fun ensureWorker(): Handler {
@@ -101,7 +139,7 @@ class MusicFreeEngine(private val context: Context) {
     }
 
     /** 挂载插件（自动替换现有插件） */
-    fun load(pluginId: String, source: String, userVariables: Map<String, String>) {
+    override fun load(pluginId: String, source: String, userVariables: Map<String, String>) {
         val handler = ensureWorker()
         _status.value = PluginEngineStatus.Loading(pluginId)
         handler.post { doLoad(pluginId, source, userVariables) }
@@ -114,7 +152,7 @@ class MusicFreeEngine(private val context: Context) {
      * @param argsJson 参数数组的 JSON 字符串，例如 `["关键词", 1, "music"]`
      * @return 插件返回值包装：`{ ok, result }`
      */
-    suspend fun invoke(method: String, argsJson: String, timeoutMs: Long = CALL_TIMEOUT_MS): JSONObject {
+    override suspend fun invoke(method: String, argsJson: String, timeoutMs: Long): JSONObject {
         val handler = worker ?: throw IllegalStateException("插件引擎未就绪")
         val requestKey = "call_" + UUID.randomUUID().toString().replace("-", "")
         val deferred = CompletableDeferred<String>()
@@ -140,13 +178,36 @@ class MusicFreeEngine(private val context: Context) {
     suspend fun invokeResult(method: String, argsJson: String, timeoutMs: Long = CALL_TIMEOUT_MS): Any? =
         invoke(method, argsJson, timeoutMs).opt("result")
 
-    fun destroy() {
+    override fun destroy() {
         val handler = worker
         if (handler == null) {
             _status.value = PluginEngineStatus.Idle
             return
         }
         handler.post { doDestroy() }
+    }
+
+    /**
+     * 查询当前 QuickJS 上下文**实际占用**的字节数（未挂载时为 0）。
+     *
+     * 与 [UserApiEngine.queryMemoryUsage] 同理：必须回到引擎自己的工作线程上读
+     * （QuickJS API 非线程安全），回调只做「写进 StateFlow」这类小事。
+     */
+    override fun queryMemoryUsage(onResult: (Long) -> Unit) {
+        val handler = worker
+        if (handler == null) {
+            onResult(0L)
+            return
+        }
+        handler.post {
+            val bytes = try {
+                jsContext?.memoryUsedSize ?: 0L
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "读取插件内存占用失败：${e.message}")
+                0L
+            }
+            onResult(bytes)
+        }
     }
 
     /* ---------------- 工作线程内部实现 ---------------- */

@@ -1,0 +1,15 @@
+[Unit]
+Description=Soda Music relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/soda-relay/relay.env
+ExecStart=/usr/bin/python3 /opt/soda-relay/relay.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
