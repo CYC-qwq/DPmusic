@@ -96,7 +96,7 @@ app/src/main/kotlin/com/dpmusic/app/
     ├── motion/DPMotion.kt        # 动效令牌：时长 / 缓动 / 弹簧 / 交错延迟
     ├── util/Haptics.kt           # 触觉反馈：tick / click / confirm / reject / gestureEnd
     ├── components/               # 42 个通用组件（含 Skeleton 骨架屏、Glass 玻璃面板、
-    │                             #   LiquidGlass 液态玻璃内核、分享 / 私信 / 评论 / 识曲 …）
+    │                             #   类玻璃材质内核、分享 / 私信 / 评论 / 识曲 …）
     └── screens/                  # 17 个子包（home / search / rank / playlist / mine / settings /
                                   #   sources / chat / together / download / ncm / qq / favorites /
                                   #   recent / artist / album / logs）
@@ -467,7 +467,7 @@ UI (Compose) ──intent──▶ ViewModel ──suspend──▶ Repository �
 - **动态取色**：Android 12+ 动态色彩（设置可关）；不可用时回退至内置手调色板
 - **深色三态**：跟随系统 / 浅色 / 深色
 - **M3 形态语言**：大圆角卡片（ExtraLarge）、全圆角胶囊（FilterChips / Pill Button）、分段按钮（`SingleChoiceSegmentedButtonRow`，我的页两 Tab 切换）
-- **组件库（43 个）**：基础类 `pressScale` / `staggeredEntrance` / `CoverArt`（模糊衬底）/ `PlatformBadge` / `PlatformChips` / `StateViews` / `Skeleton`（骨架屏）/ `DpTopAppBar` / `ListDisplay` / `ListFilterBar`；列表类 `SongRow`（含 `SwipeableSongRow`）/ `PlaylistRow` / `SongSelection`；播放类 `MiniPlayerBar` / `NowPlayingPanel` / `PlayerSheet` / `QueueSheet` / `VinylDisc` / `LyricsView` / `Visualizer`（示波器，`SpectrumVisualizer` + `VisualizerMode`，**无卡片背景**直接绘于流光底）；弹层类 `CommentsSheet` / `EqualizerSheet` / `SleepTimerSheet` / `PlaybackSpeedSheet` / `RecognitionSheet` / `SimilarSongsSheet` / `DislikeManagerSheet` / `DesktopLyricSheet` / `DownloadSheet` / `DownloadBall` / `SongShareSheet` / `ShareToNcmFriendDialog` / `NcmFriendPickerDialog` / `AddToPlaylistDialog` / `AddToPlaylistHost` / `ClipboardLinkDialog` / `WebLoginDialog` / `SearchField` / `SearchModeToggle` / `SearchTopBar` / `ListeningStatsCard` / `AccountPlaylistMiniCard`；材质类 `Glass`（GlassSurface / GlassBackdrop）/ `LiquidGlass`（液态玻璃内核）
+- **组件库（43 个）**：基础类 `pressScale` / `staggeredEntrance` / `CoverArt`（模糊衬底）/ `PlatformBadge` / `PlatformChips` / `StateViews` / `Skeleton`（骨架屏）/ `DpTopAppBar` / `ListDisplay` / `ListFilterBar`；列表类 `SongRow`（含 `SwipeableSongRow`）/ `PlaylistRow` / `SongSelection`；播放类 `MiniPlayerBar` / `NowPlayingPanel` / `PlayerSheet` / `QueueSheet` / `VinylDisc` / `LyricsView` / `Visualizer`（示波器，`SpectrumVisualizer` + `VisualizerMode`，**无卡片背景**直接绘于流光底）；弹层类 `CommentsSheet` / `EqualizerSheet` / `SleepTimerSheet` / `PlaybackSpeedSheet` / `RecognitionSheet` / `SimilarSongsSheet` / `DislikeManagerSheet` / `DesktopLyricSheet` / `DownloadSheet` / `DownloadBall` / `SongShareSheet` / `ShareToNcmFriendDialog` / `NcmFriendPickerDialog` / `AddToPlaylistDialog` / `AddToPlaylistHost` / `ClipboardLinkDialog` / `WebLoginDialog` / `SearchField` / `SearchModeToggle` / `SearchTopBar` / `ListeningStatsCard` / `AccountPlaylistMiniCard`；材质类 `Glass`（GlassSurface / GlassBackdrop）/ `LiquidGlass`（类玻璃材质内核）
 - 视觉亮点：封面 Palette 主色 → 黑胶辉光流光；榜单瀑布流卡片悬浮微光；歌单详情视差折叠头部；最近播放时间轴节点；收藏页滑动操作胶囊
 
 ### 7.1 动效与交互反馈体系（Motion & Feedback）

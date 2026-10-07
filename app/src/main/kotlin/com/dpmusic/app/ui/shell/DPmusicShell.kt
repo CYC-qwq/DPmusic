@@ -168,7 +168,7 @@ fun DPmusicShell(
     val palette by playerVm.palette.collectAsStateWithLifecycle()
     val coverSeed by playerVm.coverSeed.collectAsStateWithLifecycle()
     val favoriteKeys by playerVm.favoriteKeys.collectAsStateWithLifecycle()
-    // Liquid Glass 需要「有细节可透」：空闲态（未播放）用最近播放的封面兜底，
+    // 类玻璃材质需要「有细节可透」：空闲态（未播放）用最近播放的封面兜底，
     // 否则背景只剩一层平滑渐变色，玻璃面板看起来就是纯色卡片。
     val recentPlays by AppContainer.history.recent.collectAsStateWithLifecycle()
     val backdropCover = nowPlaying?.song?.coverUrl ?: recentPlays.firstOrNull()?.song?.coverUrl
@@ -261,7 +261,7 @@ fun DPmusicShell(
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
 
-                /* Liquid Glass 内容层：记录「背景 + 页面内容」，供覆盖在内容之上的玻璃面板（Mini 条 / 底栏）采样 */
+                /* 类玻璃材质内容层：记录「背景 + 页面内容」，供覆盖在内容之上的玻璃面板（Mini 条 / 底栏）采样 */
                 val bgLayer = LocalGlassBlur.current
                 val contentLayer = rememberGraphicsLayer()
                 val layoutDirection = LocalLayoutDirection.current

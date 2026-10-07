@@ -41,7 +41,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Liquid Glass（液态玻璃）渲染内核。
+ * 类玻璃材质渲染内核。
  *
  * 效果与量级严格对齐参考实现 `io.github.kyant0:backdrop`（AndroidLiquidGlass，Apache-2.0）：
  * 1. 边缘折射（lens）：以圆角矩形 SDF 到边缘的距离为参数，按 `circleMap` 位移剖面
@@ -112,7 +112,7 @@ half4 main(float2 coord) {
 /* 效果参数（与库示例同量级）                                           */
 /* ------------------------------------------------------------------ */
 
-/** Liquid Glass 效果参数：默认值即参考实现文档示例的取值 */
+/** 类玻璃材质效果参数：默认值即参考实现文档示例的取值 */
 internal object LiquidLens {
 
     /** 折射带高度（自面板边缘向内）：库示例 `lens(16.dp, 32.dp)` 的第一个参数 */

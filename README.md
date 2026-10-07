@@ -8,13 +8,13 @@ Gemini 也提供了些许帮助
 >
 > 一次搜索同时覆盖 **网易云音乐 / QQ 音乐 / 酷狗音乐 / 汽水音乐 / 哔哩哔哩**，
 > 统一完成播放、歌词、下载、数据同步与桌面体验；内置逐字歌词、听歌识曲、一起听、
-> 私信聊天、音效均衡器、桌面歌词悬浮窗与液态玻璃外观。
+> 私信聊天、音效均衡器、桌面歌词悬浮窗与类玻璃材质外观。
 
 | 项目 | 值 |
 |---|---|
 | 包名 | `com.dpmusic.app`（精简版 `com.dpmusic.app.nosdk`） |
 | 语言 | Kotlin 2.1.0（100% Kotlin，无 Java 源码） |
-| UI | Jetpack Compose + Material 3（液态玻璃 + 动态取色） |
+| UI | Jetpack Compose + Material 3（类玻璃材质 + 动态取色） |
 | 播放底座 | AndroidX Media3 1.11.1（ExoPlayer + MediaSessionService） |
 | 版本 | versionCode 3 / versionName 1.2.0 |
 | SDK | minSdk 23 · targetSdk 34 · compileSdk 36 |
@@ -168,7 +168,7 @@ Key 优先  → 代理 → 失败回退脚本      ← 默认
 
 ### 十四、界面与主题
 
-- **液态玻璃外观**（设置 → 外观 → 玻璃风格）：真实模糊 + **边缘折射（lens）** + **AGSL 边缘高光** + 鲜艳度，对齐 AndroidLiquidGlass 的效果量级（自研实现，不引第三方库）；Android 12 以下自动降级为半透明 + 流光底
+- **类玻璃材质外观**（设置 → 外观 → 玻璃风格）：真实模糊 + **边缘折射（lens）** + **AGSL 边缘高光** + 鲜艳度，对齐 AndroidLiquidGlass 的效果量级（自研实现，不引第三方库）；Android 12 以下自动降级为半透明 + 流光底
 - **内容从玻璃下穿过**：底栏 / Mini 条采样真实页面内容，而非装饰性底色
 - **Material 3 动态取色**（Android 12+ 取系统壁纸色），未开启时可用内置调色板（多套）
 - **自适应布局**：手机（底部导航）/ 折叠屏与平板（侧边导航栏）随 WindowSizeClass 实时切换，导航形态「变形演进」平滑过渡；单栏 ⇄ Master-Detail 双栏
@@ -319,7 +319,7 @@ DPmusic/
 ├── docs/                           项目文档
 │   ├── ARCHITECTURE.md             架构说明
 │   ├── CHANGELOG.md                迭代记录（v1.0 批次）
-│   ├── GLASS-UI.md                 液态玻璃设计规范
+│   ├── GLASS-UI.md                 类玻璃材质设计规范
 │   ├── MUSICFREE-PLUGIN.md         MusicFree 插件运行时
 │   ├── SOURCE-MANAGER.md           音源管理页信息架构
 │   ├── STORAGE.md                  存储与缓存策略
@@ -419,7 +419,7 @@ DPmusic/
 ## 延伸文档
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— 分层架构、核心数据流、线程模型、自适应体系、扩展点
-- [`docs/GLASS-UI.md`](docs/GLASS-UI.md) —— 液态玻璃设计规范（分层、令牌、降级矩阵、调参指南）
+- [`docs/GLASS-UI.md`](docs/GLASS-UI.md) —— 类玻璃材质设计规范（分层、令牌、降级矩阵、调参指南）
 - [`docs/MUSICFREE-PLUGIN.md`](docs/MUSICFREE-PLUGIN.md) —— MusicFree 插件运行时与模块兼容层
 - [`docs/SOURCE-MANAGER.md`](docs/SOURCE-MANAGER.md) —— 音源管理页信息架构与解析优先级
 - [`docs/STORAGE.md`](docs/STORAGE.md) —— 存储与缓存上限、自动清理、构建纪律

@@ -23,7 +23,7 @@ data class GlassTokens(
     /** 真实模糊支持（Android 12+） */
     val blurSupported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
-    /** 普通面板透明度（卡片 / 导航条 / Mini 条）—— Liquid Glass 要「透」：值越低，背后内容越清晰 */
+    /** 普通面板透明度（卡片 / 导航条 / Mini 条）—— 类玻璃材质要「透」：值越低，背后内容越清晰 */
     val panelAlpha: Float get() = if (dark) 0.34f else 0.36f
 
     /** 强调面板透明度（底部弹层 / 对话框 / 播放页）—— 参考实现的白色面纱量级（≈0.5~0.65） */
@@ -48,7 +48,7 @@ data class GlassTokens(
         get() = if (dark) Color.White.copy(alpha = 0.50f)
         else Color.White.copy(alpha = 0.75f)
 
-    /** 流光底光球透明度 —— Liquid Glass 的折射与「通透」都需要背景有颜色/结构，故取较浓档位 */
+    /** 流光底光球透明度 —— 类玻璃材质的折射与「通透」都需要背景有颜色/结构，故取较浓档位 */
     val glowAlpha: Float get() = if (dark) 0.48f else 0.92f
 
     /** 浅色模式面板向白色偏移（形成「亮玻璃」层次；深色模式保持烟熏玻璃） */

@@ -23,7 +23,7 @@
 | 7 | 玻璃面板 | 真实模糊 + **边缘折射** + **边缘高光（AGSL）** + 半透明 + 斜向光泽（卡片 / 栏 / Mini 条） |
 | 8 | 弹层 / 播放器 | 强透明面板（底部抽屉）；播放器保持既有沉浸式设计 |
 
-## 2.1 Liquid Glass（液态玻璃，v5 起）
+## 2.1 类玻璃材质（v5 起）
 
 对齐参考实现 [`io.github.kyant0:backdrop`](https://github.com/Kyant0/AndroidLiquidGlass)（AndroidLiquidGlass，Apache-2.0）的效果与量级，
 **不引入该库**（其 1.0.6 需要 Kotlin 2.3、2.0.x 需要 compileSdk 37，本项目 Kotlin 2.1 / compileSdk 36），
@@ -150,7 +150,7 @@
 |---|---|
 | `ui/theme/Glass.kt` | 令牌 / LocalGlass / glassPanelColor |
 | `ui/components/Glass.kt` | GlassSurface / GlassBackdrop / GlassBlurSample（采样 + 模糊 + 折射环 + 边缘高光） |
-| `ui/components/LiquidGlass.kt` | Liquid Glass 内核：AGSL 边缘高光、折射环、cornerRadiiOf、LiquidLens 参数 |
+| `ui/components/LiquidGlass.kt` | 类玻璃材质内核：AGSL 边缘高光、折射环、cornerRadiiOf、LiquidLens 参数 |
 | `ui/theme/Theme.kt` | 玻璃模式接入（透明背景 + 令牌注入） |
 | `ui/shell/DPmusicShell.kt` | 流光底挂载 + 导航栏玻璃化 |
 | `ui/components/MiniPlayerBar.kt` | Mini 条玻璃化 |
@@ -167,7 +167,7 @@
 - 封面模糊半径：`GlassBackdrop` 内 `blur(28.dp)` / 透明度 `alpha(0.48f)`。
 - v3 调优（截图像素分析）：移除面板投影（半透明下投影会从边缘透出脏影）、光球饱和度增强 + 半径加大、浅色白偏移 0.72。
 - v4 调优（iOS 控制中心方向）：真实背景模糊落地（共享背景层 + 逐面板 48dp RenderEffect）、面板更透（0.50/0.46）。
-- v5 调优（Liquid Glass）：模糊半径 48dp → **4dp**（重模糊会抹掉折射细节）；新增边缘折射（16dp / 32dp）与
+- v5 调优（类玻璃材质）：模糊半径 48dp → **4dp**（重模糊会抹掉折射细节）；新增边缘折射（16dp / 32dp）与
   AGSL 边缘高光，均匀描边由高光替代（`border = null`）。
   - 折射太夸张 → 调小 `LiquidLens.refractionAmount`（默认 32dp）；
   - 折射范围太宽 → 调小 `LiquidLens.refractionHeight`（默认 16dp，上限为面板最小圆角半径）；
@@ -177,7 +177,7 @@
 ## 8. 路线图（可迭代）
 
 - [x] 真实背景模糊（GraphicsLayer 记录 + 逐面板 RenderEffect）
-- [x] Liquid Glass：边缘折射（lens）+ AGSL 边缘高光 + 鲜艳度（对齐 AndroidLiquidGlass 效果与量级）
+- [x] 类玻璃材质：边缘折射（lens）+ AGSL 边缘高光 + 鲜艳度（对齐 AndroidLiquidGlass 效果与量级）
 - [ ] 采样对象升级：底栏 / Mini 条改为折射「真实页面内容」（需让页面内容延伸到栏下方）
 - [ ] 更多组件玻璃化（搜索框 / 筛选芯片 / 播放器控制卡）
 - [ ] 开关切换的透明度渐入过渡动画

@@ -48,7 +48,7 @@ import com.dpmusic.app.ui.theme.glassPanelColor
 import kotlin.math.roundToInt
 
 /**
- * Liquid Glass（液态玻璃）组件：
+ * 类玻璃材质组件：
  * - [GlassSurface]：通用玻璃面板（真实模糊 + 边缘折射 + 边缘高光 + 斜向光泽）；玻璃关闭时回退标准 Surface；
  * - [GlassBackdrop]：全局流光底（底色 + 封面模糊层 + 漂移光球 + 边缘渐隐），仅玻璃模式绘制；
  * - 折射 / 边缘高光需 Android 13+（API33，AGSL RuntimeShader），模糊需 Android 12+（API31），
@@ -59,7 +59,7 @@ import kotlin.math.roundToInt
 val LocalGlassBlur = staticCompositionLocalOf<GraphicsLayer?> { null }
 
 /**
- * 玻璃采样偏移（Liquid Glass）：
+ * 玻璃采样偏移（类玻璃材质）：
  * 覆盖在内容之上的玻璃面板（Mini 条 / 底栏）没有内容从它下面经过（页面内容被 Scaffold 内边距顶开），
  * 这里让面板改为采样「自己高度之上」的内容 —— 视觉上等价于「内容从玻璃下面滚过去」，
  * 这正是参考实现（AndroidLiquidGlass）玻璃底栏的观感来源。
@@ -114,7 +114,7 @@ fun GlassSurface(
         return
     }
 
-    // Liquid Glass 配方：真实模糊 + 边缘折射 + 边缘高光 + 半透明着色 + 斜向光泽
+    // 类玻璃材质配方：真实模糊 + 边缘折射 + 边缘高光 + 半透明着色 + 斜向光泽
     // （半透明面板不使用投影：Compose 的投影画在面板之下，会从边缘向内透出「脏影」）
     val panelColor = glassPanelColor(color, strong = strong)
     // API33+ 边缘高光由 AGSL 着色器沿轮廓绘制（加法混合），替代原来的均匀描边
@@ -206,7 +206,7 @@ private fun BoxScope.GlassRimLight(shape: Shape, color: Color) {
     )
 }
 
-/** 真实背景采样：把共享背景层按本面板屏幕位置平移绘制 + 边缘折射环 + 真实模糊（液态玻璃） */
+/** 真实背景采样：把共享背景层按本面板屏幕位置平移绘制 + 边缘折射环 + 真实模糊（类玻璃材质） */
 @Composable
 private fun BoxScope.GlassBlurSample(shape: Shape) {
     val glass = LocalGlass.current
@@ -314,7 +314,7 @@ fun GlassBackdrop(
         )
 
         // 2) 封面模糊层（Android 12+ 真实模糊；低版本自动跳过）
-        // Liquid Glass 需要「有东西可透」：封面作为大面积彩色底，透明度与模糊都取更浓的档位
+        // 类玻璃材质需要「有东西可透」：封面作为大面积彩色底，透明度与模糊都取更浓的档位
         if (glass.blurSupported && !coverUrl.isNullOrBlank()) {
             AsyncImage(
                 model = coverUrl,
@@ -349,7 +349,7 @@ fun GlassBackdrop(
                 .drawBehind {
                     val w = size.width
                     val h = size.height
-                    // Liquid Glass 需要「有结构可折射」：光球半径收小、数量增多 → 形成可见色块而非均匀洗白
+                    // 类玻璃材质需要「有结构可折射」：光球半径收小、数量增多 → 形成可见色块而非均匀洗白
                     val r = size.maxDimension * 0.42f
                     // 绘制阶段读取漂移值（暂停时不读取 → 无逐帧重绘；播放时逐帧漂移）
                     val d1 = if (isPlaying) drift1.value else 0.5f
